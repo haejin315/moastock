@@ -1,0 +1,125 @@
+:root {
+  --bg: #0b1120;
+  --card: #111a2e;
+  --line: #1e293b;
+  --text: #e2e8f0;
+  --muted: #7c8aa5;
+  --accent: #34d399;
+  --up: #f87171;    /* 한국 관례: 상승=빨강 */
+  --down: #60a5fa;  /* 하락=파랑 */
+  --brand-bg: #0f172a;
+  --input-bg: #0b1120;
+}
+:root[data-theme="light"] {
+  --bg: #f4f6fb;
+  --card: #ffffff;
+  --line: #e2e8f0;
+  --text: #0f172a;
+  --muted: #64748b;
+  --brand-bg: #0f172a;
+  --input-bg: #f1f5f9;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.55 "Pretendard", "Malgun Gothic", system-ui, sans-serif;
+}
+a { color: inherit; text-decoration: none; }
+a:hover { text-decoration: underline; }
+.muted { color: var(--muted); font-size: 0.85em; }
+code { background: var(--line); padding: 1px 5px; border-radius: 4px; font-size: 0.85em; }
+
+.topbar {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 14px 20px; border-bottom: 1px solid var(--line);
+}
+.brand { display: flex; align-items: center; gap: 10px; }
+.brand h1 { font-size: 19px; margin: 0; letter-spacing: -0.02em; }
+.brand .en { color: var(--muted); font-size: 12px; font-weight: 400; margin-left: 7px; }
+.topbar-right { display: flex; align-items: center; gap: 12px; }
+.icon-btn {
+  background: none; border: 1px solid var(--line); color: var(--text);
+  border-radius: 8px; padding: 4px 10px; cursor: pointer; font-size: 15px;
+}
+
+.ticker-strip {
+  display: flex; gap: 8px; overflow-x: auto; padding: 12px 20px;
+  border-bottom: 1px solid var(--line); scrollbar-width: thin;
+}
+.ticker {
+  flex: 0 0 auto; background: var(--card); border: 1px solid var(--line);
+  border-radius: 10px; padding: 8px 12px; min-width: 128px;
+}
+.ticker .t-name { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.ticker .t-price { font-weight: 600; font-variant-numeric: tabular-nums; }
+.ticker .t-chg { font-size: 12px; font-variant-numeric: tabular-nums; }
+
+.grid {
+  display: grid; gap: 16px; padding: 16px 20px;
+  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr) minmax(0, 1fr);
+  align-items: start;
+}
+@media (max-width: 1100px) { .grid { grid-template-columns: 1fr 1fr; } #watchlist-card { grid-column: 1 / -1; } }
+@media (max-width: 720px) { .grid { grid-template-columns: 1fr; padding: 12px; } }
+
+.card {
+  background: var(--card); border: 1px solid var(--line);
+  border-radius: 14px; padding: 16px;
+}
+.card-head {
+  display: flex; justify-content: space-between; align-items: center;
+  gap: 10px; margin-bottom: 10px; flex-wrap: wrap;
+}
+.card-head h2 { font-size: 16px; margin: 0; }
+.card-head .src { font-weight: 400; }
+.more { color: var(--muted); font-size: 13px; }
+
+#add-form { display: flex; gap: 6px; }
+#add-input {
+  background: var(--input-bg); color: var(--text); border: 1px solid var(--line);
+  border-radius: 8px; padding: 6px 10px; width: 210px; font-size: 13px;
+}
+#add-form button {
+  background: var(--accent); color: #06281c; border: 0; border-radius: 8px;
+  padding: 6px 12px; font-weight: 600; cursor: pointer;
+}
+
+table.quotes { width: 100%; border-collapse: collapse; }
+.quotes th, .quotes td {
+  padding: 8px 6px; border-bottom: 1px solid var(--line);
+  text-align: left; font-size: 14px;
+}
+.quotes th { color: var(--muted); font-weight: 500; font-size: 12px; }
+.quotes td.num, .quotes th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.quotes .sym { color: var(--muted); font-size: 12px; }
+.quotes .rm {
+  background: none; border: 0; color: var(--muted); cursor: pointer;
+  font-size: 13px; visibility: hidden;
+}
+.quotes tr:hover .rm { visibility: visible; }
+.up { color: var(--up); }
+.down { color: var(--down); }
+.flat { color: var(--muted); }
+.spark { display: block; }
+.spark polyline { fill: none; stroke-width: 1.6; }
+
+ul.feed { list-style: none; margin: 0; padding: 0; max-height: 520px; overflow-y: auto; }
+.feed li { padding: 9px 2px; border-bottom: 1px solid var(--line); }
+.feed li:last-child { border-bottom: 0; }
+.feed .meta { display: flex; gap: 8px; color: var(--muted); font-size: 12px; margin-top: 2px; }
+.feed .badge {
+  border: 1px solid var(--line); border-radius: 5px; padding: 0 5px; font-size: 11px;
+}
+
+.tabs { display: flex; gap: 4px; }
+.tabs button {
+  background: none; border: 1px solid var(--line); color: var(--muted);
+  border-radius: 8px; padding: 4px 10px; font-size: 13px; cursor: pointer;
+}
+.tabs button.active { color: var(--text); border-color: var(--accent); }
+
+.hint { margin: 10px 2px 0; }
+footer { padding: 8px 20px 24px; }

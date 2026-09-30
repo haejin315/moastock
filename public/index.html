@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>모아스톡</title>
+<meta name="description" content="국내외 지수·주식 시세, 공시, 뉴스를 한 화면에 모아보는 대시보드">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230f172a'/%3E%3Cpath d='M6 22l6-8 5 5 9-12' stroke='%2334d399' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <svg viewBox="0 0 32 32" width="26" height="26" aria-hidden="true">
+      <rect width="32" height="32" rx="7" fill="var(--brand-bg)"/>
+      <path d="M6 22l6-8 5 5 9-12" stroke="#34d399" stroke-width="3" fill="none"
+            stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    <h1>모아스톡<span class="en">moastock</span></h1>
+  </div>
+  <div class="topbar-right">
+    <span id="updated-at" class="muted"></span>
+    <button id="theme-toggle" class="icon-btn" title="테마 전환" aria-label="테마 전환">◐</button>
+  </div>
+</header>
+
+<nav class="ticker-strip" id="ticker-strip" aria-label="주요 지수">
+  <span class="muted">지수 불러오는 중…</span>
+</nav>
+
+<main class="grid">
+  <section class="card" id="watchlist-card">
+    <div class="card-head">
+      <h2>관심종목</h2>
+      <form id="add-form" autocomplete="off">
+        <input id="add-input" placeholder="심볼 추가 (예: 005930.KS, AAPL)" spellcheck="false">
+        <button type="submit">추가</button>
+      </form>
+    </div>
+    <table class="quotes" id="watchlist">
+      <thead><tr><th>종목</th><th class="num">현재가</th><th class="num">등락</th><th>차트</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <p class="hint muted">한국 주식은 <code>종목코드.KS</code>(코스피) / <code>.KQ</code>(코스닥) 형식 · 목록은 브라우저에 저장됩니다</p>
+  </section>
+
+  <section class="card" id="dart-card">
+    <div class="card-head">
+      <h2>최신 공시 <span class="muted src">DART</span></h2>
+      <a class="more" href="https://dart.fss.or.kr" target="_blank" rel="noopener">전체보기 ↗</a>
+    </div>
+    <ul class="feed" id="dart-list"><li class="muted">불러오는 중…</li></ul>
+  </section>
+
+  <section class="card" id="news-card">
+    <div class="card-head">
+      <h2>뉴스</h2>
+      <div class="tabs" id="news-tabs" role="tablist">
+        <button data-src="hk" class="active" role="tab">한국경제</button>
+        <button data-src="yahoo" role="tab">Yahoo</button>
+        <button data-src="mw" role="tab">MarketWatch</button>
+      </div>
+    </div>
+    <ul class="feed" id="news-list"><li class="muted">불러오는 중…</li></ul>
+  </section>
+</main>
+
+<footer>
+  <p class="muted">시세: Yahoo Finance (지연 시세일 수 있음) · 공시: 금융감독원 DART · 뉴스: 각 언론사 RSS.
+  본 페이지는 정보 제공 목적이며 투자 판단의 근거가 될 수 없습니다.</p>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>
