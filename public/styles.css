@@ -165,3 +165,19 @@ table.screener .rank { font-size: 11px; margin-right: 4px; }
 .star { background: none; border: 0; color: var(--line); cursor: pointer; font-size: 15px; }
 .star.on { color: #fbbf24; }
 .pager { display: flex; justify-content: space-between; align-items: center; padding: 10px 4px 4px; }
+
+/* 수식 칩 */
+.ctrl-row.chips { gap: 6px; margin-bottom: 4px; }
+.chip, .chip-apply {
+  background: none; border: 0; color: var(--text); cursor: pointer; font-size: 12px;
+}
+button.chip, span.chip {
+  border: 1px solid var(--line); border-radius: 999px; padding: 4px 12px;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.chip.preset { color: var(--muted); }
+.chip.on { border-color: var(--accent); color: var(--text); }
+.chip-del { background: none; border: 0; color: var(--muted); cursor: pointer; font-size: 11px; padding: 0; }
+#formula-name { width: 110px; background: var(--input-bg); color: var(--text);
+  border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; font-size: 13px; }
+#column-presets button { margin-right: 8px; }

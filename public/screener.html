@@ -45,15 +45,32 @@
           <div id="industry-list"></div>
         </div>
       </details>
+      <details class="industry-picker" id="column-picker">
+        <summary>컬럼 <span id="column-count"></span></summary>
+        <div class="industry-menu">
+          <div class="industry-actions" id="column-presets">
+            <button type="button" data-preset="basic">시세</button>
+            <button type="button" data-preset="valuation">가치</button>
+            <button type="button" data-preset="dividend">배당</button>
+            <button type="button" data-preset="financial">재무</button>
+            <button type="button" data-preset="all">전체</button>
+          </div>
+          <div id="column-list"></div>
+        </div>
+      </details>
       <input id="search" placeholder="종목명·코드 검색" spellcheck="false">
     </div>
     <div class="ctrl-row">
-      <input id="formula" placeholder="정렬 수식 — 예: 1/PER + 1/PBR,  등락률 * log(거래대금)" spellcheck="false">
-      <button id="formula-apply">수식 적용</button>
+      <input id="formula" placeholder="정렬 수식 — 예: 1/PER + 1/PBR,  순이익/시총,  등락률 * log(거래대금)" spellcheck="false">
+      <input id="formula-name" placeholder="수식 이름" spellcheck="false">
+      <button id="formula-apply">적용</button>
+      <button id="formula-save" class="ghost">저장</button>
       <button id="formula-clear" class="ghost">해제</button>
     </div>
+    <div class="ctrl-row chips" id="formula-chips"></div>
     <p class="hint muted" id="formula-help">
-      사용 가능: 가격 등락률 거래량 거래대금 시총 PER PBR EPS BPS ROE 배당 외국인 고가52 저가52 ·
+      사용 가능: 가격 등락률 거래량 거래대금 시총 PER PBR EPS BPS ROE 배당률 배당금 외국인
+      순이익 순자산 주식수 고가52 저가52 위치52 ·
       연산 + − × ÷ ^ 괄호 · 함수 abs log sqrt min max · 컬럼 제목을 눌러도 정렬됩니다
     </p>
     <p class="hint" id="formula-error" hidden></p>
@@ -62,24 +79,7 @@
   <section class="card table-card">
     <div class="table-scroll">
       <table class="quotes screener" id="screener-table">
-        <thead>
-          <tr>
-            <th></th>
-            <th data-k="name">종목</th>
-            <th data-k="industry">업종</th>
-            <th class="num" data-k="price">현재가</th>
-            <th class="num" data-k="change">등락률%</th>
-            <th class="num" data-k="volume">거래량</th>
-            <th class="num" data-k="value">거래대금</th>
-            <th class="num" data-k="marketCap">시가총액</th>
-            <th class="num" data-k="per">PER</th>
-            <th class="num" data-k="pbr">PBR</th>
-            <th class="num" data-k="roe">ROE%</th>
-            <th class="num" data-k="dividendYield">배당%</th>
-            <th class="num" data-k="foreignRate">외인%</th>
-            <th class="num formula-col" data-k="__formula" hidden>수식값</th>
-          </tr>
-        </thead>
+        <thead><tr id="head-row"></tr></thead>
         <tbody></tbody>
       </table>
     </div>

@@ -15,10 +15,15 @@ const FORMULA_FIELDS = {
   eps: ["eps"],
   bps: ["bps"],
   roe: ["roe"],          // eps/bps*100 파생값 (로드 시 계산)
-  dividend: ["dividendYield", "배당", "배당수익률"],
+  dividend: ["dividendYield", "배당", "배당률", "배당수익률"],
+  dps: ["dps", "배당금", "주당배당금"],           // price*배당률 파생
   foreign: ["foreignRate", "외국인", "외인", "외국인비율"],
-  high52: ["high52w", "고가52", "최고52", "52주고가"],
-  low52: ["low52w", "저가52", "최저52", "52주저가"],
+  high52: ["high52w", "고가52", "최고52"],
+  low52: ["low52w", "저가52", "최저52"],
+  pos52: ["pos52", "위치52", "주가위치"],                   // (가격-저가)/(고저폭)*100 파생
+  shares: ["shares", "주식수", "상장주식수"],      // 시총/가격 파생
+  netincome: ["netIncome", "순이익", "순익"],      // EPS*주식수 파생
+  equity: ["equity", "순자산", "자본", "자본총계"], // BPS*주식수 파생
 };
 
 const ALIAS_TO_KEY = (() => {
