@@ -1,0 +1,34 @@
+# 평일 장마감 후 전 종목 스냅샷(시세+PER/PBR 등)을 갱신해 커밋한다.
+# 커밋이 생기면 Cloudflare Pages가 자동으로 재배포한다.
+name: daily-snapshot
+
+on:
+  schedule:
+    - cron: "40 7 * * 1-5"   # 07:40 UTC = 16:40 KST (장마감 15:30 이후)
+  workflow_dispatch: {}       # 수동 실행 버튼
+
+permissions:
+  contents: write
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build snapshot
+        run: python scripts/build_snapshot.py
+      - name: Commit if changed
+        run: |
+          git config user.name "moastock-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add public/data/snapshot.json
+          if git diff --cached --quiet; then
+            echo "변경 없음 (휴장일 가능)"
+          else
+            git commit -m "data: daily snapshot $(date -u +%Y-%m-%d)"
+            git push
+          fi

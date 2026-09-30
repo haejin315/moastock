@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>모아스톡 스크리너</title>
+<meta name="description" content="국내 전 종목을 PER·PBR 등 모든 지표와 사용자 수식으로 줄세우는 스크리너">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230f172a'/%3E%3Cpath d='M6 22l6-8 5 5 9-12' stroke='%2334d399' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <a href="/" title="대시보드로" style="display:flex;align-items:center;gap:10px">
+      <svg viewBox="0 0 32 32" width="26" height="26" aria-hidden="true">
+        <rect width="32" height="32" rx="7" fill="var(--brand-bg)"/>
+        <path d="M6 22l6-8 5 5 9-12" stroke="#34d399" stroke-width="3" fill="none"
+              stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </a>
+    <h1>스크리너<span class="en">국내 전 종목</span></h1>
+  </div>
+  <div class="topbar-right">
+    <a class="more" href="/">← 대시보드</a>
+    <span id="data-info" class="muted"></span>
+    <button id="theme-toggle" class="icon-btn" title="테마 전환" aria-label="테마 전환">◐</button>
+  </div>
+</header>
+
+<main class="screener-wrap">
+  <section class="card controls">
+    <div class="ctrl-row">
+      <div class="seg" id="universe" role="group" aria-label="종목 범위">
+        <button data-u="all" class="active">전체</button>
+        <button data-u="KOSPI">코스피</button>
+        <button data-u="KOSDAQ">코스닥</button>
+        <button data-u="watch">관심종목</button>
+      </div>
+      <details class="industry-picker" id="industry-picker">
+        <summary>업종 <span id="industry-count"></span></summary>
+        <div class="industry-menu">
+          <div class="industry-actions">
+            <button type="button" id="industry-clear">전체 해제</button>
+          </div>
+          <div id="industry-list"></div>
+        </div>
+      </details>
+      <input id="search" placeholder="종목명·코드 검색" spellcheck="false">
+    </div>
+    <div class="ctrl-row">
+      <input id="formula" placeholder="정렬 수식 — 예: 1/PER + 1/PBR,  등락률 * log(거래대금)" spellcheck="false">
+      <button id="formula-apply">수식 적용</button>
+      <button id="formula-clear" class="ghost">해제</button>
+    </div>
+    <p class="hint muted" id="formula-help">
+      사용 가능: 가격 등락률 거래량 거래대금 시총 PER PBR EPS BPS ROE 배당 외국인 고가52 저가52 ·
+      연산 + − × ÷ ^ 괄호 · 함수 abs log sqrt min max · 컬럼 제목을 눌러도 정렬됩니다
+    </p>
+    <p class="hint" id="formula-error" hidden></p>
+  </section>
+
+  <section class="card table-card">
+    <div class="table-scroll">
+      <table class="quotes screener" id="screener-table">
+        <thead>
+          <tr>
+            <th></th>
+            <th data-k="name">종목</th>
+            <th data-k="industry">업종</th>
+            <th class="num" data-k="price">현재가</th>
+            <th class="num" data-k="change">등락률%</th>
+            <th class="num" data-k="volume">거래량</th>
+            <th class="num" data-k="value">거래대금</th>
+            <th class="num" data-k="marketCap">시가총액</th>
+            <th class="num" data-k="per">PER</th>
+            <th class="num" data-k="pbr">PBR</th>
+            <th class="num" data-k="roe">ROE%</th>
+            <th class="num" data-k="dividendYield">배당%</th>
+            <th class="num" data-k="foreignRate">외인%</th>
+            <th class="num formula-col" data-k="__formula" hidden>수식값</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="pager">
+      <span id="row-count" class="muted"></span>
+      <span>
+        <button id="prev" class="ghost">이전</button>
+        <span id="page-info" class="muted"></span>
+        <button id="next" class="ghost">다음</button>
+      </span>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <p class="muted">시세·재무 지표: 네이버증권 (지연·전일 기준일 수 있음). 본 페이지는 정보 제공 목적이며 투자 판단의 근거가 될 수 없습니다.</p>
+</footer>
+
+<script type="module" src="screener.js"></script>
+</body>
+</html>
