@@ -85,7 +85,7 @@ const state = {
   industries: new Set(),
   search: "",
   columns: loadJson("moastock.columns", DEFAULT_COLUMNS).filter((k) => COL_BY_KEY.has(k)),
-  sort: { key: "marketCap", dir: -1 },
+  sorts: [],                // 다중 정렬 [{key, dir}] - 0번이 최우선 (최근 선택)
   formulas: [],              // 활성 수식 컬럼: [{id, name, src, evaluate}]
   savedFormulas: loadJson("moastock.formulas", []),   // [{name, src}]
   page: 1,
@@ -131,7 +131,7 @@ function toggleFormula(src, name) {
   if (idx >= 0) {
     const key = formulaKey(state.formulas[idx]);
     state.formulas.splice(idx, 1);
-    if (state.sort.key === key) state.sort = { key: "marketCap", dir: -1 };
+    removeSort(key);
   } else {
     activateFormula(src, name);
   }
@@ -154,6 +154,7 @@ async function loadSnapshot() {
   state.rows.forEach(computeDerived);
   $("#data-info").textContent = `재무 기준 ${String(body.generatedAt).slice(0, 10)} · ${body.count}종목`;
   restoreActiveFormulas();
+  restoreSorts();
   buildIndustryMenu();
   buildColumnMenu();
   renderFormulaChips();
@@ -240,18 +241,92 @@ function filtered() {
   });
 }
 
+const isBad = (v) => v === null || v === undefined || v === "" || (typeof v === "number" && Number.isNaN(v));
+
+function compareBy(a, b, key, dir) {
+  const av = a[key], bv = b[key];
+  const aBad = isBad(av), bBad = isBad(bv);
+  if (aBad && bBad) return 0;
+  if (aBad) return 1;               // 값 없는 종목은 방향과 무관하게 항상 뒤로
+  if (bBad) return -1;
+  if (typeof av === "string") return dir * av.localeCompare(bv, "ko");
+  return dir * (av - bv);
+}
+
 function sorted(rows) {
-  const { key, dir } = state.sort;
+  const keys = state.sorts.length ? state.sorts : [{ key: "marketCap", dir: -1 }];
   return rows.slice().sort((a, b) => {
-    const av = a[key], bv = b[key];
-    const aBad = av === null || av === undefined || (typeof av === "number" && Number.isNaN(av)) || av === "";
-    const bBad = bv === null || bv === undefined || (typeof bv === "number" && Number.isNaN(bv)) || bv === "";
-    if (aBad && bBad) return 0;
-    if (aBad) return 1;               // 값 없는 종목은 항상 뒤로
-    if (bBad) return -1;
-    if (typeof av === "string") return dir * av.localeCompare(bv, "ko");
-    return dir * (av - bv);
+    for (const { key, dir } of keys) {   // 우선순위 순으로, 동률이면 다음 기준
+      const c = compareBy(a, b, key, dir);
+      if (c) return c;
+    }
+    return 0;
   });
+}
+
+// ---- 다중 정렬 관리 ------------------------------------------------------------
+
+const defaultDir = (key) => (key === "name" || COL_BY_KEY.get(key)?.text ? 1 : -1);
+
+function sortLabel(key) {
+  if (key === "name") return "종목";
+  if (key === "change") return "등락률%";
+  if (key.startsWith("__f")) return state.formulas.find((f) => formulaKey(f) === key)?.name || "수식";
+  return COL_BY_KEY.get(key)?.label || key;
+}
+
+// 저장 시 수식 키(__f{id})는 세션마다 바뀌므로 수식 원문으로 바꿔 둔다
+function saveSorts() {
+  saveJson("moastock.sorts", state.sorts.map(({ key, dir }) => {
+    if (!key.startsWith("__f")) return { key, dir };
+    const f = state.formulas.find((x) => formulaKey(x) === key);
+    return f ? { src: f.src, dir } : null;
+  }).filter(Boolean));
+}
+function restoreSorts() {
+  const known = (k) => k === "name" || k === "change" || COL_BY_KEY.has(k);
+  state.sorts = loadJson("moastock.sorts", [{ key: "marketCap", dir: -1 }]).map((s) => {
+    if (s.src) {
+      const f = state.formulas.find((x) => x.src === s.src);
+      return f ? { key: formulaKey(f), dir: s.dir } : null;
+    }
+    return known(s.key) ? { key: s.key, dir: s.dir } : null;
+  }).filter(Boolean);
+}
+
+// 헤더 클릭: 새 기준이면 맨 앞에 추가, 이미 있으면 맨 앞으로 올림,
+// 이미 맨 앞이면 방향만 뒤집는다
+function pickSort(key) {
+  const idx = state.sorts.findIndex((s) => s.key === key);
+  if (idx === 0) {
+    state.sorts[0].dir = -state.sorts[0].dir;
+  } else if (idx > 0) {
+    const [item] = state.sorts.splice(idx, 1);
+    state.sorts.unshift(item);
+  } else {
+    state.sorts.unshift({ key, dir: defaultDir(key) });
+  }
+  saveSorts();
+}
+
+function removeSort(key) {
+  state.sorts = state.sorts.filter((s) => s.key !== key);
+  saveSorts();
+}
+
+function renderSortChips() {
+  const el = $("#sort-chips");
+  if (!state.sorts.length) {
+    el.innerHTML = '<span class="muted">정렬 기준 없음 — 컬럼 제목을 누르면 추가됩니다 (기본: 시가총액순)</span>';
+    return;
+  }
+  el.innerHTML = '<span class="muted sort-title">정렬</span>' + state.sorts.map((s, i) => `
+    <span class="chip sort-chip ${i === 0 ? "on" : ""}" draggable="true" data-i="${i}" title="드래그로 순서 변경">
+      <span class="sort-rank">${i + 1}</span>
+      ${esc(sortLabel(s.key))}
+      <button class="sort-dir" data-i="${i}" title="오름/내림 전환">${s.dir > 0 ? "▲" : "▼"}</button>
+      <button class="chip-del" data-rm="${i}" title="정렬 기준 삭제">✕</button>
+    </span>`).join("");
 }
 
 // ---- 스파크라인 (보이는 페이지만 지연 로드, /api/quote 재사용) ---------------
@@ -336,8 +411,10 @@ function renderHead() {
   tbl.style.width = "100%";
   tbl.style.minWidth = total + "px";
   document.querySelectorAll("#head-row th[data-k]").forEach((th) => {
-    th.classList.toggle("sorted", th.dataset.k === state.sort.key);
-    th.dataset.dir = th.dataset.k === state.sort.key ? (state.sort.dir > 0 ? "▲" : "▼") : "";
+    const i = state.sorts.findIndex((s) => s.key === th.dataset.k);
+    th.classList.toggle("sorted", i >= 0);
+    th.classList.toggle("sorted-primary", i === 0);
+    th.dataset.dir = i >= 0 ? `${state.sorts[i].dir > 0 ? "▲" : "▼"}${state.sorts.length > 1 ? i + 1 : ""}` : "";
   });
 }
 
@@ -355,9 +432,9 @@ function render() {
     for (const r of rows) r[key] = f.evaluate(r);
   }
   // 정렬 키가 꺼진 수식을 가리키면 기본 정렬로
-  if (state.sort.key.startsWith("__f") && !state.formulas.some((f) => formulaKey(f) === state.sort.key)) {
-    state.sort = { key: "marketCap", dir: -1 };
-  }
+  const liveKeys = new Set(state.formulas.map(formulaKey));
+  state.sorts = state.sorts.filter((s) => !s.key.startsWith("__f") || liveKeys.has(s.key));
+  renderSortChips();
   rows = sorted(rows);
 
   const pages = Math.max(1, Math.ceil(rows.length / PAGE));
@@ -463,7 +540,8 @@ $("#formula").addEventListener("keydown", (e) => {
 $("#formula-clear").addEventListener("click", () => {
   state.formulas = [];
   saveJson("moastock.activeFormulas", []);
-  if (state.sort.key.startsWith("__f")) state.sort = { key: "marketCap", dir: -1 };
+  state.sorts = state.sorts.filter((s) => !s.key.startsWith("__f"));
+  saveSorts();
   $("#formula-error").hidden = true;
   renderFormulaChips();
   render();
@@ -499,12 +577,60 @@ $("#formula-chips").addEventListener("click", (e) => {
 document.querySelector("thead").addEventListener("click", (e) => {
   const th = e.target.closest("th[data-k]");
   if (!th) return;
-  const key = th.dataset.k;
-  const textCol = key === "name" || COL_BY_KEY.get(key)?.text;
-  state.sort = state.sort.key === key
-    ? { key, dir: -state.sort.dir }
-    : { key, dir: textCol ? 1 : -1 };
+  pickSort(th.dataset.k);
+  state.page = 1;
   render();
+});
+
+// 정렬 칩: 방향 전환 / 삭제 / 드래그로 우선순위 변경
+$("#sort-chips").addEventListener("click", (e) => {
+  const dirBtn = e.target.closest(".sort-dir");
+  if (dirBtn) {
+    const s = state.sorts[Number(dirBtn.dataset.i)];
+    s.dir = -s.dir;
+  } else {
+    const rm = e.target.closest("[data-rm]");
+    if (!rm) return;
+    state.sorts.splice(Number(rm.dataset.rm), 1);
+  }
+  saveSorts();
+  state.page = 1;
+  render();
+});
+
+let dragFrom = null;
+$("#sort-chips").addEventListener("dragstart", (e) => {
+  const chip = e.target.closest(".sort-chip");
+  if (!chip) return;
+  dragFrom = Number(chip.dataset.i);
+  e.dataTransfer.effectAllowed = "move";
+  e.dataTransfer.setData("text/plain", String(dragFrom));
+  chip.classList.add("dragging");
+});
+$("#sort-chips").addEventListener("dragover", (e) => {
+  const chip = e.target.closest(".sort-chip");
+  if (!chip || dragFrom === null) return;
+  e.preventDefault();
+  document.querySelectorAll(".sort-chip.drop-target").forEach((c) => c.classList.remove("drop-target"));
+  chip.classList.add("drop-target");
+});
+$("#sort-chips").addEventListener("drop", (e) => {
+  const chip = e.target.closest(".sort-chip");
+  if (!chip || dragFrom === null) return;
+  e.preventDefault();
+  const to = Number(chip.dataset.i);
+  if (to !== dragFrom) {
+    const [item] = state.sorts.splice(dragFrom, 1);
+    state.sorts.splice(to, 0, item);
+    saveSorts();
+    state.page = 1;
+  }
+  dragFrom = null;
+  render();
+});
+$("#sort-chips").addEventListener("dragend", () => {
+  dragFrom = null;
+  document.querySelectorAll(".sort-chip").forEach((c) => c.classList.remove("dragging", "drop-target"));
 });
 
 $("#screener-table").addEventListener("click", (e) => {
