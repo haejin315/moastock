@@ -1,5 +1,7 @@
 /* 스크리너: 스냅샷(전 종목 + 펀더멘털) 로드 → 장중 시세 병합 → 파생지표 계산 →
    유니버스/업종/검색 필터 → 선택한 컬럼만 표시, 컬럼 또는 사용자 수식으로 정렬.
+   수식은 여러 개를 동시에 켤 수 있고(각각 컬럼으로 추가), 켜고 끄는 것은
+   정렬을 바꾸지 않는다 - 그 수식 컬럼의 헤더를 눌렀을 때만 정렬이 바뀐다.
    전부 클라이언트에서 동작한다. */
 "use strict";
 import { compileFormula } from "./formula.js";
@@ -21,7 +23,7 @@ const fmtRatio = (v) => v === null || v === undefined || Number.isNaN(v)
   ? "-" : (Math.abs(v) >= 1000 ? Math.round(v).toLocaleString("ko-KR") : v.toFixed(2));
 const chgClass = (v) => v === null || v === undefined ? "flat" : v > 0 ? "up" : v < 0 ? "down" : "flat";
 
-// key: 데이터 필드 / label: 헤더 / fmt: 셀 포맷 / cls: 추가 클래스
+// key: 데이터 필드 / label: 헤더 / fmt: 셀 포맷 / w: 고정 폭(px)
 const COLUMNS = [
   { key: "industry", label: "업종", fmt: (v) => v || "-", text: true, w: 140 },
   { key: "price", label: "현재가", fmt: fmtPrice, w: 92 },
@@ -84,11 +86,13 @@ const state = {
   search: "",
   columns: loadJson("moastock.columns", DEFAULT_COLUMNS).filter((k) => COL_BY_KEY.has(k)),
   sort: { key: "marketCap", dir: -1 },
-  formula: null,             // {evaluate, src}
+  formulas: [],              // 활성 수식 컬럼: [{id, name, src, evaluate}]
   savedFormulas: loadJson("moastock.formulas", []),   // [{name, src}]
   page: 1,
 };
 if (!state.columns.length) state.columns = [...DEFAULT_COLUMNS];
+let nextFormulaId = 1;
+const formulaKey = (f) => `__f${f.id}`;
 
 const $ = (sel) => document.querySelector(sel);
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) =>
@@ -113,6 +117,35 @@ function computeDerived(row) {
     ? Math.round(((price - low52w) / (high52w - low52w)) * 1000) / 10 : null;
 }
 
+// ---- 수식 활성화 (토글: 정렬은 건드리지 않는다) ------------------------------
+
+function activateFormula(src, name) {
+  const { evaluate } = compileFormula(src);   // 실패 시 throw - 호출부에서 처리
+  const f = { id: nextFormulaId++, name: name || src, src, evaluate };
+  state.formulas.push(f);
+  return f;
+}
+
+function toggleFormula(src, name) {
+  const idx = state.formulas.findIndex((f) => f.src === src);
+  if (idx >= 0) {
+    const key = formulaKey(state.formulas[idx]);
+    state.formulas.splice(idx, 1);
+    if (state.sort.key === key) state.sort = { key: "marketCap", dir: -1 };
+  } else {
+    activateFormula(src, name);
+  }
+  saveJson("moastock.activeFormulas", state.formulas.map((f) => ({ name: f.name, src: f.src })));
+  renderFormulaChips();
+  render();
+}
+
+function restoreActiveFormulas() {
+  for (const f of loadJson("moastock.activeFormulas", [])) {
+    try { activateFormula(f.src, f.name); } catch (e) { /* 깨진 저장분은 무시 */ }
+  }
+}
+
 // ---- 데이터 로드 -------------------------------------------------------------
 
 async function loadSnapshot() {
@@ -120,6 +153,7 @@ async function loadSnapshot() {
   state.rows = body.stocks.map((s) => ({ ...s }));
   state.rows.forEach(computeDerived);
   $("#data-info").textContent = `재무 기준 ${String(body.generatedAt).slice(0, 10)} · ${body.count}종목`;
+  restoreActiveFormulas();
   buildIndustryMenu();
   buildColumnMenu();
   renderFormulaChips();
@@ -176,21 +210,23 @@ function updateColumnCount() {
 
 // ---- 수식 칩 -------------------------------------------------------------------
 
+const isActiveSrc = (src) => state.formulas.some((f) => f.src === src);
+
 function renderFormulaChips() {
   const chips = [];
   for (const f of PRESET_FORMULAS) {
-    chips.push(`<button class="chip preset ${state.formula?.src === f.src ? "on" : ""}"
-      data-src="${esc(f.src)}" title="${esc(f.src)}">${esc(f.name)}</button>`);
+    chips.push(`<button class="chip preset ${isActiveSrc(f.src) ? "on" : ""}"
+      data-src="${esc(f.src)}" data-name="${esc(f.name)}" title="${esc(f.src)}">${esc(f.name)}</button>`);
   }
   for (const [i, f] of state.savedFormulas.entries()) {
-    chips.push(`<span class="chip user ${state.formula?.src === f.src ? "on" : ""}" title="${esc(f.src)}">
-      <button class="chip-apply" data-src="${esc(f.src)}">${esc(f.name)}</button>
-      <button class="chip-del" data-del="${i}" title="삭제">✕</button></span>`);
+    chips.push(`<span class="chip user ${isActiveSrc(f.src) ? "on" : ""}" title="${esc(f.src)}">
+      <button class="chip-apply" data-src="${esc(f.src)}" data-name="${esc(f.name)}">${esc(f.name)}</button>
+      <button class="chip-del" data-del="${i}" title="저장 삭제">✕</button></span>`);
   }
   $("#formula-chips").innerHTML = chips.join("");
 }
 
-// ---- 필터/정렬/렌더 --------------------------------------------------------------
+// ---- 필터/정렬 --------------------------------------------------------------
 
 function filtered() {
   const q = state.search.trim().toLowerCase();
@@ -207,8 +243,7 @@ function filtered() {
 function sorted(rows) {
   const { key, dir } = state.sort;
   return rows.slice().sort((a, b) => {
-    const av = key === "__formula" ? a.__formula : a[key];
-    const bv = key === "__formula" ? b.__formula : b[key];
+    const av = a[key], bv = b[key];
     const aBad = av === null || av === undefined || (typeof av === "number" && Number.isNaN(av)) || av === "";
     const bBad = bv === null || bv === undefined || (typeof bv === "number" && Number.isNaN(bv)) || bv === "";
     if (aBad && bBad) return 0;
@@ -272,7 +307,9 @@ function paintSparks() {
   });
 }
 
-const FIXED_W = { star: 36, name: 185, chart: 100, change: 84, formula: 94 };
+// ---- 테이블 렌더 ----------------------------------------------------------------
+
+const FIXED_W = { star: 36, name: 185, chart: 100, change: 84, formula: 110 };
 
 function renderHead() {
   const cells = [
@@ -287,11 +324,14 @@ function renderHead() {
     cells.push(`<th class="${c.text ? "" : "num"}" style="width:${c.w}px" data-k="${c.key}">${esc(c.label)}</th>`);
     total += c.w;
   }
-  if (state.formula) { cells.push(`<th class="num" style="width:${FIXED_W.formula}px" data-k="__formula">수식값</th>`); total += FIXED_W.formula; }
+  for (const f of state.formulas) {
+    cells.push(`<th class="num formula-head" style="width:${FIXED_W.formula}px"
+      data-k="${formulaKey(f)}" title="${esc(f.src)} — 클릭하면 이 수식으로 정렬">${esc(f.name)}</th>`);
+    total += FIXED_W.formula;
+  }
   $("#head-row").innerHTML = cells.join("");
-  // table-layout:fixed - 숫자 열들은 px 고정, 폭 미지정인 '종목' 열이
-  // 남는 공간을 흡수 → 테이블은 항상 페이지 폭을 채운다.
-  // 합계가 화면보다 크면 min-width로 가로 스크롤.
+  // table-layout:fixed - 숫자 열은 px 고정, 폭 미지정인 '종목' 열이 남는 공간을
+  // 흡수해 테이블이 항상 페이지 폭을 채운다. 합계가 화면보다 크면 가로 스크롤.
   const tbl = $("#screener-table");
   tbl.style.width = "100%";
   tbl.style.minWidth = total + "px";
@@ -305,14 +345,18 @@ function cellHtml(row, key) {
   const c = COL_BY_KEY.get(key);
   const v = row[key];
   if (c.text) return `<td class="industry-cell">${esc(c.fmt(v))}</td>`;
-  const cls = c.color ? ` ${chgClass(v)}` : "";
-  return `<td class="num${cls}">${c.fmt(v)}</td>`;
+  return `<td class="num">${c.fmt(v)}</td>`;
 }
 
 function render() {
   let rows = filtered();
-  if (state.formula) {
-    for (const r of rows) r.__formula = state.formula.evaluate(r);
+  for (const f of state.formulas) {
+    const key = formulaKey(f);
+    for (const r of rows) r[key] = f.evaluate(r);
+  }
+  // 정렬 키가 꺼진 수식을 가리키면 기본 정렬로
+  if (state.sort.key.startsWith("__f") && !state.formulas.some((f) => formulaKey(f) === state.sort.key)) {
+    state.sort = { key: "marketCap", dir: -1 };
   }
   rows = sorted(rows);
 
@@ -330,8 +374,8 @@ function render() {
       `<td data-spark="${r.code}">${cached ? sparkSvg(cached.spark, r.change) : '<span class="muted">·</span>'}</td>`,
       `<td class="num ${chgClass(r.change)}">${r.change === null || r.change === undefined ? "-" : r.change.toFixed(2)}</td>`,
       ...state.columns.map((key) => cellHtml(r, key)),
+      ...state.formulas.map((f) => `<td class="num">${fmtRatio(r[formulaKey(f)] ?? null)}</td>`),
     ];
-    if (state.formula) cells.push(`<td class="num">${fmtRatio(r.__formula ?? null)}</td>`);
     return `<tr>${cells.join("")}</tr>`;
   }).join("");
   fillSparks(slice);
@@ -371,7 +415,6 @@ $("#industry-clear").addEventListener("click", () => {
 
 $("#column-list").addEventListener("change", () => {
   const picked = [...document.querySelectorAll("#column-list input:checked")].map((i) => i.value);
-  // 표시 순서는 COLUMNS 정의 순서를 따른다
   state.columns = COLUMNS.map((c) => c.key).filter((k) => picked.includes(k));
   if (!state.columns.length) state.columns = ["price"];
   saveJson("moastock.columns", state.columns);
@@ -393,73 +436,70 @@ $("#search").addEventListener("input", (e) => {
   render();
 });
 
-function applyFormulaSrc(src) {
-  const errEl = $("#formula-error");
-  try {
-    const { evaluate } = compileFormula(src);
-    state.formula = { evaluate, src };
-    state.sort = { key: "__formula", dir: -1 };
-    errEl.hidden = true;
-    state.page = 1;
-    $("#formula").value = src;
-    renderFormulaChips();
-    render();
-  } catch (err) {
-    errEl.textContent = err.message;
-    errEl.hidden = false;
-  }
+// ---- 수식 이벤트: 적용/칩 = 컬럼 토글 (정렬 유지), 저장 = 이름 붙여 보관 --------
+
+function showFormulaError(err) {
+  $("#formula-error").textContent = err.message;
+  $("#formula-error").hidden = false;
 }
-function clearFormula() {
-  state.formula = null;
-  $("#formula-error").hidden = true;
-  if (state.sort.key === "__formula") state.sort = { key: "marketCap", dir: -1 };
-  renderFormulaChips();
-  render();
+
+function tryToggle(src, name) {
+  try {
+    toggleFormula(src, name);
+    $("#formula-error").hidden = true;
+  } catch (err) { showFormulaError(err); }
 }
 
 $("#formula-apply").addEventListener("click", () => {
   const src = $("#formula").value.trim();
-  src ? applyFormulaSrc(src) : clearFormula();
+  if (!src) return;
+  tryToggle(src, $("#formula-name").value.trim() || src);
 });
 $("#formula").addEventListener("keydown", (e) => {
-  if (e.key === "Enter") { const s = $("#formula").value.trim(); s ? applyFormulaSrc(s) : clearFormula(); }
+  if (e.key !== "Enter") return;
+  const src = $("#formula").value.trim();
+  if (src) tryToggle(src, $("#formula-name").value.trim() || src);
 });
-$("#formula-clear").addEventListener("click", () => { $("#formula").value = ""; clearFormula(); });
+$("#formula-clear").addEventListener("click", () => {
+  state.formulas = [];
+  saveJson("moastock.activeFormulas", []);
+  if (state.sort.key.startsWith("__f")) state.sort = { key: "marketCap", dir: -1 };
+  $("#formula-error").hidden = true;
+  renderFormulaChips();
+  render();
+});
 
 $("#formula-save").addEventListener("click", () => {
   const src = $("#formula").value.trim();
   if (!src) return;
-  try { compileFormula(src); } catch (err) {
-    $("#formula-error").textContent = err.message;
-    $("#formula-error").hidden = false;
-    return;
-  }
+  try { compileFormula(src); } catch (err) { showFormulaError(err); return; }
   const name = $("#formula-name").value.trim() || `수식 ${state.savedFormulas.length + 1}`;
   const existing = state.savedFormulas.findIndex((f) => f.name === name);
   if (existing >= 0) state.savedFormulas[existing] = { name, src };
   else state.savedFormulas.push({ name, src });
   saveJson("moastock.formulas", state.savedFormulas);
   $("#formula-name").value = "";
-  applyFormulaSrc(src);
+  if (!isActiveSrc(src)) tryToggle(src, name);   // 저장과 동시에 컬럼으로 켠다 (정렬은 유지)
+  else renderFormulaChips();
 });
 
 $("#formula-chips").addEventListener("click", (e) => {
   const del = e.target.closest("[data-del]");
   if (del) {
-    state.savedFormulas.splice(Number(del.dataset.del), 1);
+    const removed = state.savedFormulas.splice(Number(del.dataset.del), 1)[0];
     saveJson("moastock.formulas", state.savedFormulas);
-    renderFormulaChips();
+    if (removed && isActiveSrc(removed.src)) toggleFormula(removed.src);   // 활성 컬럼도 끈다
+    else renderFormulaChips();
     return;
   }
   const apply = e.target.closest("[data-src]");
-  if (apply) applyFormulaSrc(apply.dataset.src);
+  if (apply) tryToggle(apply.dataset.src, apply.dataset.name);
 });
 
 document.querySelector("thead").addEventListener("click", (e) => {
   const th = e.target.closest("th[data-k]");
   if (!th) return;
   const key = th.dataset.k;
-  if (key === "__formula" && !state.formula) return;
   const textCol = key === "name" || COL_BY_KEY.get(key)?.text;
   state.sort = state.sort.key === key
     ? { key, dir: -state.sort.dir }
