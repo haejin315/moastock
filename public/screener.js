@@ -25,7 +25,6 @@ const chgClass = (v) => v === null || v === undefined ? "flat" : v > 0 ? "up" : 
 const COLUMNS = [
   { key: "industry", label: "업종", fmt: (v) => v || "-", text: true },
   { key: "price", label: "현재가", fmt: fmtPrice },
-  { key: "change", label: "등락률%", fmt: (v) => v === null ? "-" : v.toFixed(2), color: true },
   { key: "volume", label: "거래량", fmt: fmtBig },
   { key: "value", label: "거래대금", fmt: fmtBig },
   { key: "marketCap", label: "시가총액", fmt: fmtBig },
@@ -47,13 +46,13 @@ const COLUMNS = [
 const COL_BY_KEY = new Map(COLUMNS.map((c) => [c.key, c]));
 
 const COLUMN_PRESETS = {
-  basic: ["industry", "price", "change", "volume", "value", "marketCap"],
+  basic: ["industry", "price", "volume", "value", "marketCap"],
   valuation: ["industry", "price", "marketCap", "per", "pbr", "roe", "eps", "bps"],
   dividend: ["industry", "price", "dividendYield", "dps", "per", "marketCap"],
   financial: ["industry", "marketCap", "netIncome", "equity", "shares", "roe", "foreignRate"],
   all: COLUMNS.map((c) => c.key),
 };
-const DEFAULT_COLUMNS = ["industry", "price", "change", "value", "marketCap", "per", "pbr", "roe", "dividendYield", "foreignRate"];
+const DEFAULT_COLUMNS = ["industry", "price", "value", "marketCap", "per", "pbr", "roe", "dividendYield", "foreignRate"];
 
 // ---- 기본 제공 수식 --------------------------------------------------------
 
@@ -220,8 +219,62 @@ function sorted(rows) {
   });
 }
 
+// ---- 스파크라인 (보이는 페이지만 지연 로드, /api/quote 재사용) ---------------
+
+const sparkCache = new Map();   // code -> {spark, t}
+const SPARK_TTL = 60_000;
+let sparkEpoch = 0;
+
+function sparkSvg(points, change, w = 84, h = 26) {
+  if (!points || points.length < 2) return '<span class="muted">-</span>';
+  const min = Math.min(...points), max = Math.max(...points);
+  const span = max - min || 1;
+  const coords = points
+    .map((v, i) => `${((i / (points.length - 1)) * w).toFixed(1)},${(h - 2 - ((v - min) / span) * (h - 4)).toFixed(1)}`)
+    .join(" ");
+  const color = change > 0 ? "var(--up)" : change < 0 ? "var(--down)" : "var(--muted)";
+  return `<svg class="spark" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">` +
+         `<polyline points="${coords}" style="stroke:${color}"/></svg>`;
+}
+
+async function fillSparks(rows) {
+  const epoch = ++sparkEpoch;   // 페이지가 바뀌면 이전 요청 결과는 버린다
+  const now = Date.now();
+  const missing = rows.filter((r) => {
+    const hit = sparkCache.get(r.code);
+    return !hit || now - hit.t > SPARK_TTL;
+  });
+  for (let i = 0; i < missing.length; i += 20) {
+    const part = missing.slice(i, i + 20);
+    try {
+      const symbols = part.map(symbolOf).join(",");
+      const body = await (await fetch(`/api/quote?symbols=${encodeURIComponent(symbols)}`)).json();
+      for (const q of body.quotes || []) {
+        sparkCache.set(q.symbol.replace(/\.(KS|KQ)$/, ""), { spark: q.spark, t: Date.now() });
+      }
+      for (const sym of Object.keys(body.errors || {})) {
+        sparkCache.set(sym.replace(/\.(KS|KQ)$/, ""), { spark: null, t: Date.now() });
+      }
+    } catch (e) { return; }
+    if (epoch !== sparkEpoch) return;
+    paintSparks();
+  }
+  if (epoch === sparkEpoch) paintSparks();
+}
+
+function paintSparks() {
+  document.querySelectorAll("[data-spark]").forEach((td) => {
+    const code = td.dataset.spark;
+    const hit = sparkCache.get(code);
+    if (!hit) return;
+    const row = state.rows.find((r) => r.code === code);
+    td.innerHTML = sparkSvg(hit.spark, row ? row.change : 0);
+  });
+}
+
 function renderHead() {
-  const cells = ['<th></th>', '<th data-k="name">종목</th>'];
+  const cells = ['<th></th>', '<th data-k="name">종목</th>',
+    '<th>차트</th>', '<th class="num" data-k="change">등락률%</th>'];
   for (const key of state.columns) {
     const c = COL_BY_KEY.get(key);
     cells.push(`<th class="${c.text ? "" : "num"}" data-k="${c.key}">${esc(c.label)}</th>`);
@@ -255,15 +308,19 @@ function render() {
 
   renderHead();
   $("#screener-table tbody").innerHTML = slice.map((r, idx) => {
+    const cached = sparkCache.get(r.code);
     const cells = [
       `<td><button class="star ${watchHasCode(r) ? "on" : ""}" data-code="${r.code}" title="관심종목">★</button></td>`,
       `<td><span class="rank muted">${(state.page - 1) * PAGE + idx + 1}</span> ${esc(r.name)}
         <div class="sym">${r.code} · ${r.market === "KOSDAQ" ? "코스닥" : "코스피"}</div></td>`,
+      `<td data-spark="${r.code}">${cached ? sparkSvg(cached.spark, r.change) : '<span class="muted">·</span>'}</td>`,
+      `<td class="num ${chgClass(r.change)}">${r.change === null || r.change === undefined ? "-" : r.change.toFixed(2)}</td>`,
       ...state.columns.map((key) => cellHtml(r, key)),
     ];
     if (state.formula) cells.push(`<td class="num">${fmtRatio(r.__formula ?? null)}</td>`);
     return `<tr>${cells.join("")}</tr>`;
   }).join("");
+  fillSparks(slice);
 
   $("#row-count").textContent = `${rows.length.toLocaleString("ko-KR")}종목`;
   $("#page-info").textContent = `${state.page} / ${pages}`;
@@ -426,4 +483,4 @@ try {
 loadSnapshot().then(refreshLive).catch(() => {
   $("#data-info").textContent = "스냅샷 로드 실패";
 });
-setInterval(refreshLive, 90_000);
+setInterval(refreshLive, 60_000);
