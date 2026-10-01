@@ -214,3 +214,13 @@ ul.board li { padding: 10px 2px; border-bottom: 1px solid var(--line); }
 .board-body { white-space: pre-wrap; font-size: 14px; margin-top: 3px; }
 tr.rowlink { cursor: pointer; }
 tr.rowlink:hover td { background: rgba(52, 211, 153, 0.05); }
+
+/* 토론방 비밀번호/삭제 */
+.board-ids { display: flex; flex-direction: column; gap: 6px; }
+#board-pw { width: 130px; background: var(--input-bg); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-size: 13px; }
+.board-del-open { margin-left: auto; background: none; border: 0; color: var(--muted); cursor: pointer; font-size: 12px; }
+.board-del-open:hover { color: var(--up); }
+.board-del { display: flex; gap: 6px; align-items: center; margin-top: 6px; flex-wrap: wrap; }
+.board-del input { width: 150px; background: var(--input-bg); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; font-size: 12px; }
+.board-del-confirm { background: var(--up); color: #fff; border: 0; border-radius: 8px; padding: 5px 12px; font-size: 12px; cursor: pointer; }
+.board-del-msg { color: #fbbf24; font-size: 12px; }

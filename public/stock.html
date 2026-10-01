@@ -71,10 +71,14 @@
   <section class="card">
     <div class="card-head"><h2>토론방</h2><span class="muted" id="board-count"></span></div>
     <form id="board-form" autocomplete="off">
-      <input id="board-nick" placeholder="닉네임 (선택)" maxlength="20">
+      <div class="board-ids">
+        <input id="board-nick" placeholder="닉네임 (선택)" maxlength="20">
+        <input id="board-pw" type="password" placeholder="비밀번호 4~12자" minlength="4" maxlength="12" autocomplete="new-password">
+      </div>
       <textarea id="board-body" placeholder="의견을 남겨보세요 (최대 500자) — 투자 손실에 대한 책임은 본인에게 있습니다" maxlength="500" rows="2"></textarea>
       <button type="submit">등록</button>
     </form>
+    <p class="hint muted">익명 게시판 · 1인당 분당 3회 작성 · 최대 500자 · 비밀번호(4~12자)는 글 삭제에 쓰이며 복구할 수 없습니다 · 부적절한 글은 예고 없이 삭제될 수 있습니다</p>
     <p class="hint" id="board-error" hidden></p>
     <ul class="board" id="board-list"><li class="muted">불러오는 중…</li></ul>
   </section>

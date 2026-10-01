@@ -98,6 +98,9 @@ async function refreshQuote() {
 // ---- 차트 ---------------------------------------------------------------------
 
 let chart = null, candleSeries = null, volumeSeries = null;
+// 무한 히스토리: 보이는 범위가 왼쪽 끝(과거)에 닿으면 이전 구간을 추가 로드해
+// 차트가 끊기지 않고 이어진다.
+const chartState = { tf: "day", candles: [], loading: false, exhausted: false, epoch: 0 };
 
 function ensureChart() {
   if (chart) return;
@@ -125,26 +128,81 @@ function ensureChart() {
     priceScaleId: "vol",
   });
   chart.priceScale("vol").applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
+  // 왼쪽(과거)으로 15개 캔들 이내로 접근하면 이전 구간을 당겨온다
+  chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+    if (range && range.from < 15) loadOlder();
+  });
+}
+
+function setSeriesData() {
+  const candles = chartState.candles;
+  candleSeries.setData(candles.map((c) => ({
+    time: c.time, open: c.open, high: c.high, low: c.low, close: c.close,
+  })));
+  volumeSeries.setData(candles.map((c) => ({
+    time: c.time, value: c.volume,
+    color: c.close >= c.open ? "rgba(248,113,113,0.45)" : "rgba(96,165,250,0.45)",
+  })));
+}
+
+const TF_LABEL = { minute: "5분봉", day: "일봉", week: "주봉", month: "월봉" };
+
+function noteText(extra = "") {
+  return `${TF_LABEL[chartState.tf]} · ${chartState.candles.length.toLocaleString("ko-KR")}개 캔들 · ` +
+    `과거로 드래그하면 이전 데이터가 이어집니다${extra} · Yahoo Finance`;
 }
 
 async function loadChart(tf) {
   ensureChart();
+  const epoch = ++chartState.epoch;      // 탭 전환 시 이전 요청/페이징 무효화
+  chartState.tf = tf;
+  chartState.candles = [];
+  chartState.loading = false;
+  chartState.exhausted = tf === "month"; // 월봉은 이미 전체 구간
   $("#chart-note").textContent = "차트 불러오는 중…";
   try {
     const body = await (await fetch(`/api/chart?symbol=${encodeURIComponent(symbol)}&tf=${tf}`)).json();
-    const candles = body.candles || [];
-    candleSeries.setData(candles.map((c) => ({
-      time: c.time, open: c.open, high: c.high, low: c.low, close: c.close,
-    })));
-    volumeSeries.setData(candles.map((c) => ({
-      time: c.time, value: c.volume,
-      color: c.close >= c.open ? "rgba(248,113,113,0.45)" : "rgba(96,165,250,0.45)",
-    })));
+    if (epoch !== chartState.epoch) return;
+    chartState.candles = body.candles || [];
+    setSeriesData();
     chart.timeScale().fitContent();
-    const label = { minute: "5분봉 · 최근 5거래일", day: "일봉 · 1년", week: "주봉 · 5년", month: "월봉 · 전체" }[tf];
-    $("#chart-note").textContent = `${label} · ${candles.length}개 캔들 · Yahoo Finance`;
+    $("#chart-note").textContent = noteText();
   } catch (e) {
     $("#chart-note").textContent = "차트를 불러오지 못했습니다";
+  }
+}
+
+async function loadOlder() {
+  if (chartState.loading || chartState.exhausted || !chartState.candles.length) return;
+  chartState.loading = true;
+  const epoch = chartState.epoch;
+  const first = chartState.candles[0].time;
+  try {
+    const body = await (await fetch(
+      `/api/chart?symbol=${encodeURIComponent(symbol)}&tf=${chartState.tf}&before=${first}`,
+    )).json();
+    if (epoch !== chartState.epoch) return;
+    const older = (body.candles || []).filter((c) => c.time < first);
+    if (body.exhausted || !older.length) {
+      chartState.exhausted = true;
+      $("#chart-note").textContent = noteText(" (전체 구간 끝)");
+      return;
+    }
+    // 데이터를 앞에 붙이면 논리 인덱스가 밀리므로, 보이던 범위를 되돌려
+    // 화면이 점프하지 않게 한다
+    const view = chart.timeScale().getVisibleLogicalRange();
+    chartState.candles = older.concat(chartState.candles);
+    setSeriesData();
+    if (view) {
+      chart.timeScale().setVisibleLogicalRange({
+        from: view.from + older.length,
+        to: view.to + older.length,
+      });
+    }
+    $("#chart-note").textContent = noteText();
+  } catch (e) { /* 다음 스크롤에서 재시도 */ }
+  finally {
+    if (epoch === chartState.epoch) chartState.loading = false;
   }
 }
 
@@ -201,25 +259,78 @@ async function loadBoard() {
       el.innerHTML = '<li class="muted">첫 글을 남겨보세요</li>';
       return;
     }
-    el.innerHTML = body.items.map((p) => `<li>
+    el.innerHTML = body.items.map((p) => `<li data-id="${p.id}">
       <div class="board-head"><b>${esc(p.nick)}</b>
-        <span class="muted">${esc(String(p.created_at).replace("T", " ").slice(0, 16))} UTC</span></div>
-      <div class="board-body">${esc(p.body)}</div></li>`).join("");
+        <span class="muted">${esc(String(p.created_at).replace("T", " ").slice(0, 16))} UTC</span>
+        ${p.deletable ? '<button class="board-del-open" type="button">삭제</button>' : ""}</div>
+      <div class="board-body">${esc(p.body)}</div>
+      <div class="board-del" hidden>
+        <input type="password" placeholder="작성 시 비밀번호" minlength="4" maxlength="12" autocomplete="current-password">
+        <button class="board-del-confirm" type="button">확인</button>
+        <button class="board-del-cancel ghost" type="button">취소</button>
+        <span class="board-del-msg"></span>
+      </div></li>`).join("");
   } catch (e) {
     el.innerHTML = '<li class="muted">토론방 불러오기 실패</li>';
   }
 }
 
+// 삭제는 글 아래에 비밀번호 입력칸을 펼쳐서 처리한다 (브라우저 prompt 미사용)
+$("#board-list").addEventListener("click", async (e) => {
+  const li = e.target.closest("li[data-id]");
+  if (!li) return;
+  const panel = li.querySelector(".board-del");
+  if (e.target.closest(".board-del-open")) {
+    panel.hidden = !panel.hidden;
+    if (!panel.hidden) panel.querySelector("input").focus();
+    return;
+  }
+  if (e.target.closest(".board-del-cancel")) {
+    panel.hidden = true;
+    return;
+  }
+  if (!e.target.closest(".board-del-confirm")) return;
+  const msg = panel.querySelector(".board-del-msg");
+  const password = panel.querySelector("input").value;
+  if (password.length < 4 || password.length > 12) {
+    msg.textContent = "비밀번호는 4~12자입니다";
+    return;
+  }
+  try {
+    const resp = await fetch("/api/board", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: Number(li.dataset.id), password }),
+    });
+    const out = await resp.json();
+    if (!resp.ok) throw new Error(out.error || "삭제 실패");
+    loadBoard();
+  } catch (err) {
+    msg.textContent = err.message;
+  }
+});
+$("#board-list").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && e.target.closest(".board-del input")) {
+    e.target.closest(".board-del").querySelector(".board-del-confirm").click();
+  }
+});
+
 $("#board-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const body = $("#board-body").value.trim();
-  if (!body) return;
+  const password = $("#board-pw").value;
   const errEl = $("#board-error");
+  if (!body) return;
+  if (password.length < 4 || password.length > 12) {
+    errEl.textContent = "비밀번호를 4~12자로 입력하세요 (글 삭제 시 필요)";
+    errEl.hidden = false;
+    return;
+  }
   try {
     const resp = await fetch("/api/board", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ code, nick: $("#board-nick").value.trim(), body }),
+      body: JSON.stringify({ code, nick: $("#board-nick").value.trim(), body, password }),
     });
     const out = await resp.json();
     if (!resp.ok) throw new Error(out.error || "등록 실패");
