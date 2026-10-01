@@ -376,7 +376,7 @@ function render() {
       ...state.columns.map((key) => cellHtml(r, key)),
       ...state.formulas.map((f) => `<td class="num">${fmtRatio(r[formulaKey(f)] ?? null)}</td>`),
     ];
-    return `<tr>${cells.join("")}</tr>`;
+    return `<tr class="rowlink" data-code="${r.code}">${cells.join("")}</tr>`;
   }).join("");
   fillSparks(slice);
 
@@ -509,13 +509,17 @@ document.querySelector("thead").addEventListener("click", (e) => {
 
 $("#screener-table").addEventListener("click", (e) => {
   const btn = e.target.closest(".star");
-  if (!btn) return;
-  const row = state.rows.find((r) => r.code === btn.dataset.code);
-  if (!row) return;
-  const sym = symbolOf(row);
-  watch.has(sym) ? watch.delete(sym) : watch.add(sym);
-  saveJson("moastock.watchlist", [...watch]);
-  render();
+  if (btn) {
+    const row = state.rows.find((r) => r.code === btn.dataset.code);
+    if (!row) return;
+    const sym = symbolOf(row);
+    watch.has(sym) ? watch.delete(sym) : watch.add(sym);
+    saveJson("moastock.watchlist", [...watch]);
+    render();
+    return;
+  }
+  const tr = e.target.closest("tr.rowlink");
+  if (tr) location.href = `/stock.html?code=${tr.dataset.code}`;
 });
 
 $("#prev").addEventListener("click", () => { state.page--; render(); });

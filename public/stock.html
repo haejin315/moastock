@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>모아스톡 종목</title>
+<meta name="description" content="종목 차트(분봉·일봉·주봉·월봉), 재무 지표, 공시, 뉴스, 토론방">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230f172a'/%3E%3Cpath d='M6 22l6-8 5 5 9-12' stroke='%2334d399' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="styles.css">
+<script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"></script>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <a href="/" title="대시보드로" style="display:flex;align-items:center;gap:10px">
+      <svg viewBox="0 0 32 32" width="26" height="26" aria-hidden="true">
+        <rect width="32" height="32" rx="7" fill="var(--brand-bg)"/>
+        <path d="M6 22l6-8 5 5 9-12" stroke="#34d399" stroke-width="3" fill="none"
+              stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </a>
+    <h1 id="stock-title">종목<span class="en" id="stock-code"></span></h1>
+    <button id="watch-toggle" class="star big" title="관심종목">★</button>
+  </div>
+  <div class="topbar-right">
+    <a class="more" href="/screener.html">스크리너</a>
+    <a class="more" href="/">대시보드</a>
+    <button id="theme-toggle" class="icon-btn" title="테마 전환" aria-label="테마 전환">◐</button>
+  </div>
+</header>
+
+<main class="stock-wrap">
+  <section class="card price-head">
+    <div>
+      <div class="big-price" id="price">-</div>
+      <div id="price-chg" class="flat">-</div>
+    </div>
+    <div class="muted" id="meta">-</div>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <h2>차트</h2>
+      <div class="tabs" id="tf-tabs" role="tablist">
+        <button data-tf="minute">분봉</button>
+        <button data-tf="day" class="active">일봉</button>
+        <button data-tf="week">주봉</button>
+        <button data-tf="month">월봉</button>
+      </div>
+    </div>
+    <div id="chart" class="chart-box"></div>
+    <p class="hint muted" id="chart-note"></p>
+  </section>
+
+  <section class="card">
+    <h2 class="sec-title">주요 지표</h2>
+    <div class="fact-grid" id="facts"></div>
+  </section>
+
+  <div class="two-col">
+    <section class="card">
+      <div class="card-head"><h2>공시</h2><span class="muted src">KOSCOM</span></div>
+      <ul class="feed" id="disclosure-list"><li class="muted">불러오는 중…</li></ul>
+    </section>
+    <section class="card">
+      <div class="card-head"><h2>뉴스</h2></div>
+      <ul class="feed" id="news-list"><li class="muted">불러오는 중…</li></ul>
+    </section>
+  </div>
+
+  <section class="card">
+    <div class="card-head"><h2>토론방</h2><span class="muted" id="board-count"></span></div>
+    <form id="board-form" autocomplete="off">
+      <input id="board-nick" placeholder="닉네임 (선택)" maxlength="20">
+      <textarea id="board-body" placeholder="의견을 남겨보세요 (최대 500자) — 투자 손실에 대한 책임은 본인에게 있습니다" maxlength="500" rows="2"></textarea>
+      <button type="submit">등록</button>
+    </form>
+    <p class="hint" id="board-error" hidden></p>
+    <ul class="board" id="board-list"><li class="muted">불러오는 중…</li></ul>
+  </section>
+</main>
+
+<footer>
+  <p class="muted">차트: Yahoo Finance · 공시: KOSCOM(네이버증권 제공) · 뉴스: 네이버뉴스 · 재무: 네이버증권.
+  정보 제공 목적이며 투자 판단의 근거가 될 수 없습니다. 토론방 게시글은 작성자 개인의 의견입니다.</p>
+</footer>
+
+<script type="module" src="stock.js"></script>
+</body>
+</html>

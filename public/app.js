@@ -95,19 +95,24 @@ function renderTickers(bySymbol) {
   }).join("");
 }
 
+function stockLink(sym, label) {
+  const m = sym.match(/^(\d{6})\.(KS|KQ)$/);
+  return m ? `<a href="/stock.html?code=${m[1]}">${label}</a>` : label;
+}
+
 function renderWatchlist(bySymbol, errors) {
   const tbody = document.querySelector("#watchlist tbody");
   tbody.innerHTML = watchlist.map((sym) => {
     const q = bySymbol.get(sym);
-    const name = KNOWN_NAMES.get(sym) || sym;
+    const name = stockLink(sym, esc(KNOWN_NAMES.get(sym) || sym));
     if (!q) {
       const why = errors && errors[sym] ? "조회 실패" : "…";
-      return `<tr><td>${esc(name)}<div class="sym">${esc(sym)}</div></td>
+      return `<tr><td>${name}<div class="sym">${esc(sym)}</div></td>
         <td class="num muted">${why}</td><td></td><td></td>
         <td><button class="rm" data-sym="${esc(sym)}" title="삭제">✕</button></td></tr>`;
     }
     return `<tr>
-      <td>${esc(name)}<div class="sym">${esc(sym)}</div></td>
+      <td>${name}<div class="sym">${esc(sym)}</div></td>
       <td class="num">${fmtPrice(q.price, q.currency)}</td>
       <td class="num ${chgClass(q.changePct)}">${fmtChg(q.changePct)}</td>
       <td>${sparkSvg(q.spark, q.changePct)}</td>

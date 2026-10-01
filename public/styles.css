@@ -188,3 +188,29 @@ table.screener th, table.screener td {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 table.screener td:nth-child(2) { white-space: normal; }  /* 종목명+코드 두 줄 유지 */
+
+/* ---- 종목 상세 ---- */
+.stock-wrap { display: flex; flex-direction: column; gap: 14px; padding: 16px 20px; max-width: 1100px; margin: 0 auto; }
+.price-head { display: flex; justify-content: space-between; align-items: center; }
+.big-price { font-size: 30px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.chart-box { height: 420px; }
+@media (max-width: 720px) { .chart-box { height: 300px; } }
+.sec-title { font-size: 16px; margin: 0 0 10px; }
+.fact-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.fact { background: var(--input-bg); border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px; }
+.fact-k { font-size: 12px; color: var(--muted); }
+.fact-v { font-weight: 600; font-variant-numeric: tabular-nums; }
+.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+@media (max-width: 860px) { .two-col { grid-template-columns: 1fr; } }
+.star.big { font-size: 20px; margin-left: 4px; }
+#board-form { display: flex; gap: 8px; align-items: flex-start; flex-wrap: wrap; }
+#board-nick { width: 130px; background: var(--input-bg); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-size: 13px; }
+#board-body { flex: 1; min-width: 240px; background: var(--input-bg); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-size: 13px; resize: vertical; font-family: inherit; }
+#board-form button { background: var(--accent); color: #06281c; border: 0; border-radius: 8px; padding: 9px 16px; font-weight: 600; cursor: pointer; }
+#board-error { color: #fbbf24; }
+ul.board { list-style: none; margin: 12px 0 0; padding: 0; }
+ul.board li { padding: 10px 2px; border-bottom: 1px solid var(--line); }
+.board-head { display: flex; gap: 8px; align-items: baseline; font-size: 13px; }
+.board-body { white-space: pre-wrap; font-size: 14px; margin-top: 3px; }
+tr.rowlink { cursor: pointer; }
+tr.rowlink:hover td { background: rgba(52, 211, 153, 0.05); }
