@@ -277,7 +277,7 @@ const FIXED_W = { star: 36, name: 185, chart: 100, change: 84, formula: 94 };
 function renderHead() {
   const cells = [
     `<th style="width:${FIXED_W.star}px"></th>`,
-    `<th style="width:${FIXED_W.name}px" data-k="name">종목</th>`,
+    `<th data-k="name">종목</th>`,
     `<th style="width:${FIXED_W.chart}px">차트</th>`,
     `<th class="num" style="width:${FIXED_W.change}px" data-k="change">등락률%</th>`,
   ];
@@ -289,8 +289,12 @@ function renderHead() {
   }
   if (state.formula) { cells.push(`<th class="num" style="width:${FIXED_W.formula}px" data-k="__formula">수식값</th>`); total += FIXED_W.formula; }
   $("#head-row").innerHTML = cells.join("");
-  // table-layout:fixed + 합산 폭 고정: 열 조합이 바뀌어도 각 열 너비는 불변
-  $("#screener-table").style.width = total + "px";
+  // table-layout:fixed - 숫자 열들은 px 고정, 폭 미지정인 '종목' 열이
+  // 남는 공간을 흡수 → 테이블은 항상 페이지 폭을 채운다.
+  // 합계가 화면보다 크면 min-width로 가로 스크롤.
+  const tbl = $("#screener-table");
+  tbl.style.width = "100%";
+  tbl.style.minWidth = total + "px";
   document.querySelectorAll("#head-row th[data-k]").forEach((th) => {
     th.classList.toggle("sorted", th.dataset.k === state.sort.key);
     th.dataset.dir = th.dataset.k === state.sort.key ? (state.sort.dir > 0 ? "▲" : "▼") : "";
