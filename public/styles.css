@@ -181,3 +181,10 @@ button.chip, span.chip {
 #formula-name { width: 110px; background: var(--input-bg); color: var(--text);
   border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; font-size: 13px; }
 #column-presets button { margin-right: 8px; }
+
+/* 고정 열 너비: 열 조합이 바뀌어도 너비 불변, 넘치는 텍스트는 말줄임 */
+table.screener { table-layout: fixed; min-width: 0; }
+table.screener th, table.screener td {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+table.screener td:nth-child(2) { white-space: normal; }  /* 종목명+코드 두 줄 유지 */

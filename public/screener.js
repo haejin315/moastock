@@ -23,25 +23,25 @@ const chgClass = (v) => v === null || v === undefined ? "flat" : v > 0 ? "up" : 
 
 // key: 데이터 필드 / label: 헤더 / fmt: 셀 포맷 / cls: 추가 클래스
 const COLUMNS = [
-  { key: "industry", label: "업종", fmt: (v) => v || "-", text: true },
-  { key: "price", label: "현재가", fmt: fmtPrice },
-  { key: "volume", label: "거래량", fmt: fmtBig },
-  { key: "value", label: "거래대금", fmt: fmtBig },
-  { key: "marketCap", label: "시가총액", fmt: fmtBig },
-  { key: "per", label: "PER", fmt: fmtRatio },
-  { key: "pbr", label: "PBR", fmt: fmtRatio },
-  { key: "eps", label: "EPS", fmt: fmtPrice },
-  { key: "bps", label: "BPS", fmt: fmtPrice },
-  { key: "roe", label: "ROE%", fmt: fmtRatio },
-  { key: "netIncome", label: "순이익", fmt: fmtBig },
-  { key: "equity", label: "순자산", fmt: fmtBig },
-  { key: "shares", label: "주식수", fmt: fmtBig },
-  { key: "dividendYield", label: "배당률%", fmt: fmtRatio },
-  { key: "dps", label: "주당배당금", fmt: fmtPrice },
-  { key: "foreignRate", label: "외인%", fmt: fmtRatio },
-  { key: "high52w", label: "52주고", fmt: fmtPrice },
-  { key: "low52w", label: "52주저", fmt: fmtPrice },
-  { key: "pos52", label: "52주위치%", fmt: fmtRatio },
+  { key: "industry", label: "업종", fmt: (v) => v || "-", text: true, w: 140 },
+  { key: "price", label: "현재가", fmt: fmtPrice, w: 92 },
+  { key: "volume", label: "거래량", fmt: fmtBig, w: 92 },
+  { key: "value", label: "거래대금", fmt: fmtBig, w: 96 },
+  { key: "marketCap", label: "시가총액", fmt: fmtBig, w: 96 },
+  { key: "per", label: "PER", fmt: fmtRatio, w: 78 },
+  { key: "pbr", label: "PBR", fmt: fmtRatio, w: 78 },
+  { key: "eps", label: "EPS", fmt: fmtPrice, w: 90 },
+  { key: "bps", label: "BPS", fmt: fmtPrice, w: 90 },
+  { key: "roe", label: "ROE%", fmt: fmtRatio, w: 78 },
+  { key: "netIncome", label: "순이익", fmt: fmtBig, w: 96 },
+  { key: "equity", label: "순자산", fmt: fmtBig, w: 96 },
+  { key: "shares", label: "주식수", fmt: fmtBig, w: 104 },
+  { key: "dividendYield", label: "배당률%", fmt: fmtRatio, w: 84 },
+  { key: "dps", label: "주당배당금", fmt: fmtPrice, w: 100 },
+  { key: "foreignRate", label: "외인%", fmt: fmtRatio, w: 78 },
+  { key: "high52w", label: "52주고", fmt: fmtPrice, w: 92 },
+  { key: "low52w", label: "52주저", fmt: fmtPrice, w: 92 },
+  { key: "pos52", label: "52주위치%", fmt: fmtRatio, w: 94 },
 ];
 const COL_BY_KEY = new Map(COLUMNS.map((c) => [c.key, c]));
 
@@ -272,15 +272,25 @@ function paintSparks() {
   });
 }
 
+const FIXED_W = { star: 36, name: 185, chart: 100, change: 84, formula: 94 };
+
 function renderHead() {
-  const cells = ['<th></th>', '<th data-k="name">종목</th>',
-    '<th>차트</th>', '<th class="num" data-k="change">등락률%</th>'];
+  const cells = [
+    `<th style="width:${FIXED_W.star}px"></th>`,
+    `<th style="width:${FIXED_W.name}px" data-k="name">종목</th>`,
+    `<th style="width:${FIXED_W.chart}px">차트</th>`,
+    `<th class="num" style="width:${FIXED_W.change}px" data-k="change">등락률%</th>`,
+  ];
+  let total = FIXED_W.star + FIXED_W.name + FIXED_W.chart + FIXED_W.change;
   for (const key of state.columns) {
     const c = COL_BY_KEY.get(key);
-    cells.push(`<th class="${c.text ? "" : "num"}" data-k="${c.key}">${esc(c.label)}</th>`);
+    cells.push(`<th class="${c.text ? "" : "num"}" style="width:${c.w}px" data-k="${c.key}">${esc(c.label)}</th>`);
+    total += c.w;
   }
-  if (state.formula) cells.push('<th class="num" data-k="__formula">수식값</th>');
+  if (state.formula) { cells.push(`<th class="num" style="width:${FIXED_W.formula}px" data-k="__formula">수식값</th>`); total += FIXED_W.formula; }
   $("#head-row").innerHTML = cells.join("");
+  // table-layout:fixed + 합산 폭 고정: 열 조합이 바뀌어도 각 열 너비는 불변
+  $("#screener-table").style.width = total + "px";
   document.querySelectorAll("#head-row th[data-k]").forEach((th) => {
     th.classList.toggle("sorted", th.dataset.k === state.sort.key);
     th.dataset.dir = th.dataset.k === state.sort.key ? (state.sort.dir > 0 ? "▲" : "▼") : "";
