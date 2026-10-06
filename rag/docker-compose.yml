@@ -1,0 +1,62 @@
+# 벡터 저장소 비교용 로컬 스택. 세 서비스 모두 같은 자원 상한(4 CPU / 12GB)으로 띄워
+# 성능 비교를 공정하게 한다. 클라우드 이전 시 같은 이미지 버전을 쓰면 결과를 재현할 수 있다.
+#   docker compose -f rag/docker-compose.yml up -d
+
+x-limits: &limits
+  deploy:
+    resources:
+      limits: { cpus: "4", memory: 12g }
+
+services:
+  postgres:
+    image: pgvector/pgvector:0.8.1-pg18
+    <<: *limits
+    environment:
+      POSTGRES_USER: moarag
+      POSTGRES_PASSWORD: moarag
+      POSTGRES_DB: moarag
+    # 적재·인덱스 빌드용 튜닝: HNSW 빌드는 maintenance_work_mem 안에 그래프가 들어가야 빠르다
+    command: >
+      postgres
+      -c shared_buffers=3GB
+      -c effective_cache_size=9GB
+      -c maintenance_work_mem=4GB
+      -c max_parallel_maintenance_workers=3
+      -c max_parallel_workers_per_gather=2
+      -c max_worker_processes=8
+      -c work_mem=64MB
+      -c max_wal_size=8GB
+      -c checkpoint_timeout=30min
+      -c random_page_cost=1.1
+      -c jit=off
+    shm_size: 4g
+    ports: ["5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql]
+
+  qdrant:
+    image: qdrant/qdrant:v1.19.1
+    <<: *limits
+    ports: ["6333:6333", "6334:6334"]
+    volumes: [qdrant:/qdrant/storage]
+
+  opensearch:
+    build:
+      context: .
+      dockerfile: opensearch.Dockerfile
+    image: moarag-opensearch:3.3.0-nori
+    <<: *limits
+    environment:
+      discovery.type: single-node
+      DISABLE_SECURITY_PLUGIN: "true"          # 로컬 전용. 클라우드에서는 보안 플러그인 필수
+      DISABLE_INSTALL_DEMO_CONFIG: "true"
+      OPENSEARCH_JAVA_OPTS: "-Xms4g -Xmx4g"    # 나머지 메모리는 k-NN 네이티브(faiss) 그래프용
+    ulimits:
+      memlock: { soft: -1, hard: -1 }
+      nofile: { soft: 65536, hard: 65536 }
+    ports: ["9200:9200"]
+    volumes: [opensearch:/usr/share/opensearch/data]
+
+volumes:
+  pgdata:
+  qdrant:
+  opensearch:

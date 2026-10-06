@@ -1,3 +1,8 @@
 node_modules/
 .wrangler/
 .dev.vars
+
+# RAG 파이프라인: 비밀값, 가상환경, 캐시
+rag/.env
+rag/**/__pycache__/
+.wrangler-home/

@@ -1,0 +1,14 @@
+# torch는 CPU 빌드: pip install --index-url https://download.pytorch.org/whl/cpu torch
+torch
+sentence-transformers
+aiohttp
+selectolax
+pyahocorasick
+datasketch>=2.0
+pyarrow
+numpy
+psutil
+psycopg[binary]>=3.2
+pgvector
+qdrant-client>=1.19
+opensearch-py>=3.0
