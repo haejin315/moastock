@@ -253,6 +253,22 @@ table.screener th.sorted-primary { color: var(--text); }
 .pchip.op { min-width: 24px; text-align: center; font-weight: 600; }
 .pchip.func { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
 .pchip.dragging { opacity: 0.4; }
-#formula.drop-ok { border-color: var(--accent); border-style: dashed; }
-#formula.invalid { border-color: var(--up); }
+/* 수식 블록 편집기 - 입력칸 모양 + 안에 블록 */
+.formula-editor {
+  flex: 1 1 320px; min-height: 36px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--input-bg); color: var(--text); font-size: 14px; line-height: 24px; outline: none;
+  white-space: pre-wrap; word-break: break-word; cursor: text;
+}
+.formula-editor:focus { border-color: var(--accent); }
+.formula-editor.empty::before { content: attr(data-placeholder); color: var(--muted); pointer-events: none; }
+.formula-editor.drop-ok { border-color: var(--accent); border-style: dashed; }
+.formula-editor.invalid { border-color: var(--up); }
+.fchip {
+  display: inline-block; margin: 0 2px; padding: 0 7px; border-radius: 6px; line-height: 22px; font-size: 13px;
+  border: 1px solid var(--line); background: var(--card); user-select: none; vertical-align: baseline;
+}
+.fchip.field { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); }
+.fchip.func { font-weight: 600; }
+.fchip.op { min-width: 18px; text-align: center; font-weight: 700; padding: 0 5px; }
+.fchip.num { font-variant-numeric: tabular-nums; }
 #formula-error.live { color: var(--up); }

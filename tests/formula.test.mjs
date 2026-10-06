@@ -63,7 +63,7 @@ test("팔레트: 항목은 모두 수식에서 실제로 동작하고, 문자 �
   }
   for (const it of FORMULA_PALETTE.find((g) => g.kind === "func").items) {
     const args = ["min", "max"].includes(it.label) ? "PER, PBR" : "PER";
-    assert.doesNotThrow(() => compileFormula(`${it.insert}${args})`), it.label);
+    assert.doesNotThrow(() => compileFormula(`${it.insert}(${args})`), it.label);
   }
   // 연산 칩만으로 만든 식
   const op = Object.fromEntries(FORMULA_PALETTE.find((g) => g.kind === "op").items.map((i) => [i.label, i.insert]));
@@ -72,4 +72,37 @@ test("팔레트: 항목은 모두 수식에서 실제로 동작하고, 문자 �
   for (const bad of ["업종", "종목명", "코드", "시장"]) {
     assert.throws(() => compileFormula(`${bad} + 1`), /알 수 없는 항목/, bad);
   }
+});
+
+test("블록 이름은 줄임말 없이, 수식도 정식 명칭으로 계산된다", async () => {
+  const { FORMULA_PALETTE, FORMULA_KEYWORDS } = await import("../public/formula.js");
+  const SHORT = ["시총", "고가52", "저가52", "위치52", "배당률", "배당금", "외국인", "주식수", "가격", "abs", "log", "sqrt", "min", "max"];
+  for (const g of FORMULA_PALETTE) for (const it of g.items) {
+    assert.ok(!SHORT.includes(it.label), `줄임말 블록: ${it.label}`);
+    assert.ok(!/^[A-Z]{2,4}$/.test(it.label), `영문 약어만 있는 블록: ${it.label}`);
+  }
+  assert.equal(compileFormula("1 / 주가수익비율 + 1 / 주가순자산비율").evaluate(row), 0.6);
+  assert.equal(compileFormula("52주최고가 - 52주최저가").evaluate(row), 40000);
+  assert.equal(compileFormula("최댓값(주가수익비율, 주가순자산비율)").evaluate(row), 10);
+  // 입력 사전에 괄호 붙은 표시명은 없다('(' 입력과 겹치지 않게)
+  assert.ok(FORMULA_KEYWORDS.every((k) => !k.word.includes("(")));
+});
+
+test("수식 ↔ 블록 변환과 표기 통일", async () => {
+  const { formulaToBlocks, blocksToFormula, normalizeFormula } = await import("../public/formula.js");
+  const blocks = formulaToBlocks("(가격 - 저가52) / (고가52 - 저가52) * 100");
+  assert.deepEqual(blocks.map((b) => b.label),
+    ["(", "현재가", "−", "52주 최저가", ")", "÷", "(", "52주 최고가", "−", "52주 최저가", ")", "×", "100"]);
+  assert.equal(normalizeFormula("1/PER + 1/PBR"), "1 / 주가수익비율 + 1 / 주가순자산비율");
+  assert.equal(normalizeFormula("등락률 * log(거래대금)"), "등락률 * 자연로그(거래대금)");
+  // 같은 뜻이면 같은 표기 → 저장된 옛 수식(줄임말)과 새 수식이 같은 것으로 인식된다
+  assert.equal(normalizeFormula("순이익/시총*100"), normalizeFormula("순이익 / 시가총액 * 100"));
+  // 쓸 수 없는 단어는 글자로 남는다(편집기에서 오류로 보임)
+  assert.deepEqual(formulaToBlocks("업종 + 1").map((b) => b.kind), ["text", "op", "num"]);
+  assert.equal(normalizeFormula("업종 + 1"), "업종 + 1");
+  // 정규화한 수식도 원래와 같은 값을 낸다
+  for (const src of ["1/PER + 1/PBR", "(가격 - 저가52) / (고가52 - 저가52) * 100", "max(PER, PBR) ^ 2"]) {
+    assert.equal(compileFormula(normalizeFormula(src)).evaluate(row), compileFormula(src).evaluate(row), src);
+  }
+  assert.equal(blocksToFormula(formulaToBlocks("자연로그(거래대금)")), "자연로그(거래대금)");
 });

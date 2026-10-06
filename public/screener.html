@@ -61,7 +61,8 @@
       <input id="search" placeholder="종목명·코드 검색" spellcheck="false">
     </div>
     <div class="ctrl-row">
-      <input id="formula" placeholder="정렬 수식 — 예: 1/PER + 1/PBR,  순이익/시총,  등락률 * log(거래대금)" spellcheck="false">
+      <div id="formula-editor" class="formula-editor" aria-label="수식"></div>
+      <input type="hidden" id="formula">
       <input id="formula-name" placeholder="수식 이름" spellcheck="false">
       <button id="formula-apply">적용</button>
       <button id="formula-save" class="ghost">저장</button>
@@ -71,8 +72,9 @@
     <div class="ctrl-row chips" id="sort-chips"></div>
     <div class="palette" id="formula-palette" aria-label="수식 블록"></div>
     <p class="hint muted" id="formula-help">
-      블록을 수식 칸으로 끌어다 놓거나 클릭하면 커서 위치에 들어갑니다 · 블록은 몇 번이든 다시 쓸 수 있습니다 ·
-      업종·종목명 같은 문자 항목은 계산할 수 없어 수식에 넣을 수 없습니다 · 컬럼 제목을 눌러도 정렬됩니다
+      블록을 수식 칸으로 끌어다 놓거나 클릭하면 커서 위치에 들어갑니다(몇 번이든 다시 쓸 수 있습니다) ·
+      직접 입력해도 이름·숫자·기호가 완성되면 블록으로 바뀝니다 · 블록이 되지 않은 글자는 수식에 쓸 수 없는 단어입니다 ·
+      업종·종목명 같은 문자 항목은 계산할 수 없어 넣을 수 없습니다 · 컬럼 제목을 눌러도 정렬됩니다
     </p>
     <p class="hint" id="formula-error" hidden></p>
   </section>
