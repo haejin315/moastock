@@ -1,7 +1,7 @@
 // GET /api/news?src=hk|yahoo|mw
 // 언론사 RSS를 JSON으로 변환하는 프록시. 피드는 허용 목록으로만 제한한다
 // (임의 URL 프록시가 되면 SSRF 구멍이 된다).
-import { json, bad, cached, fetchUpstream } from "./_utils.js";
+import { json, bad, cached, fetchUpstream, decodeEntities } from "./_utils.js";
 
 const FEEDS = {
   hk: { name: "한국경제 증권", url: "https://www.hankyung.com/feed/finance", lang: "ko" },
@@ -19,15 +19,9 @@ const MAX_ITEMS = 30;
 function pick(block, tag) {
   const m = block.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)</${tag}>`, "i"));
   if (!m) return "";
-  return m[1]
-    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;|&apos;/g, "'")
-    .trim();
+  return decodeEntities(
+    m[1].replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1").replace(/<[^>]+>/g, ""),
+  ).trim();
 }
 
 function parseRss(xml) {

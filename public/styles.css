@@ -1,3 +1,5 @@
+[hidden] { display: none !important; }
+
 :root {
   --bg: #0b1120;
   --card: #111a2e;
@@ -50,7 +52,7 @@ code { background: var(--line); padding: 1px 5px; border-radius: 4px; font-size:
   border-bottom: 1px solid var(--line); scrollbar-width: thin;
 }
 .ticker {
-  flex: 0 0 auto; background: var(--card); border: 1px solid var(--line);
+  flex: 1 0 auto; background: var(--card); border: 1px solid var(--line);
   border-radius: 10px; padding: 8px 12px; min-width: 128px;
 }
 .ticker .t-name { font-size: 12px; color: var(--muted); white-space: nowrap; }

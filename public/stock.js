@@ -13,6 +13,7 @@ if (!/^\d{6}$/.test(code)) {
 }
 
 let stock = null;   // snapshot 행
+let snapshotAt = "";
 let symbol = code + ".KS";
 
 const fmtPrice = (v) => v === null || v === undefined ? "-" : v.toLocaleString("ko-KR");
@@ -24,6 +25,9 @@ const fmtBig = (v) => {
   return sign + Math.round(a).toLocaleString("ko-KR");
 };
 const fmtRatio = (v) => v === null || v === undefined || Number.isNaN(v) ? "-" : v.toFixed(2);
+// 서버 시각(UTC)을 한국 시간 "YYYY-MM-DD HH:mm"으로
+const fmtKst = (ms) => new Date(ms + 9 * 3600e3).toISOString().replace("T", " ").slice(0, 16);
+const MARKET_STATE = { PRE: "장 시작 전", REGULAR: "장중", POST: "장 마감 후", CLOSED: "장 마감" };
 const chgClass = (v) => v === null || v === undefined ? "flat" : v > 0 ? "up" : v < 0 ? "down" : "flat";
 
 // ---- 관심종목 ---------------------------------------------------------------
@@ -48,12 +52,14 @@ async function loadInfo() {
   try {
     const body = await (await fetch("/data/snapshot.json")).json();
     stock = body.stocks.find((s) => s.code === code) || null;
+    snapshotAt = body.generatedAt || "";
   } catch (e) { /* 스냅샷 없이도 차트는 동작 */ }
   if (stock) {
     symbol = code + (stock.market === "KOSDAQ" ? ".KQ" : ".KS");
     document.title = `${stock.name} - 모아스톡`;
     $("#stock-title").firstChild.textContent = stock.name;
-    $("#stock-code").textContent = `${code} · ${stock.market === "KOSDAQ" ? "코스닥" : "코스피"} · ${stock.industry || ""}`;
+    $("#stock-code").textContent =
+      [code, stock.market === "KOSDAQ" ? "코스닥" : "코스피", stock.industry].filter(Boolean).join(" · ");
     renderFacts();
   } else {
     $("#stock-title").firstChild.textContent = code;
@@ -63,11 +69,14 @@ async function loadInfo() {
   refreshQuote();
 }
 
-function renderFacts() {
+// livePrice가 있으면 시가총액을 현재가로 다시 계산한다(주식수 = 스냅샷 시총 ÷ 스냅샷 가격).
+// 스냅샷 시총은 전일 종가 기준이라 그대로 쓰면 스크리너(실시간)와 숫자가 어긋난다.
+function renderFacts(livePrice = null) {
   const s = stock;
   const shares = s.price && s.marketCap ? s.marketCap / s.price : null;
+  const marketCap = livePrice && shares ? shares * livePrice : s.marketCap;
   const facts = [
-    ["시가총액", fmtBig(s.marketCap)],
+    ["시가총액", fmtBig(marketCap)],
     ["PER", fmtRatio(s.per)], ["PBR", fmtRatio(s.pbr)],
     ["EPS", fmtPrice(s.eps)], ["BPS", fmtPrice(s.bps)],
     ["ROE", s.eps !== null && s.bps ? (s.eps / s.bps * 100).toFixed(1) + "%" : "-"],
@@ -79,6 +88,8 @@ function renderFacts() {
   ];
   $("#facts").innerHTML = facts.map(([k, v]) =>
     `<div class="fact"><div class="fact-k">${k}</div><div class="fact-v">${v}</div></div>`).join("");
+  $("#facts-note").textContent = `재무 지표: 네이버증권 ${String(snapshotAt).slice(0, 10)} 스냅샷` +
+    (livePrice && shares ? " · 시가총액은 현재가 기준" : "");
 }
 
 async function refreshQuote() {
@@ -91,7 +102,12 @@ async function refreshQuote() {
     el.className = chgClass(q.changePct);
     el.textContent = (q.changePct > 0 ? "▲ " : q.changePct < 0 ? "▼ " : "") +
       `${Math.abs(q.changePct ?? 0).toFixed(2)}%  (전일 ${fmtPrice(q.prevClose)})`;
-    $("#meta").textContent = `${q.exchange} · ${q.currency} · ${q.marketState || ""}`;
+    $("#meta").textContent = [
+      "Yahoo Finance",
+      q.time ? fmtKst(q.time * 1000) + " 기준" : "",
+      MARKET_STATE[q.marketState] || "",
+    ].filter(Boolean).join(" · ");
+    if (stock) renderFacts(q.price);
   } catch (e) { /* 유지 */ }
 }
 
@@ -110,18 +126,21 @@ function ensureChart() {
     layout: {
       background: { type: "solid", color: "transparent" },
       textColor: css.getPropertyValue("--muted").trim() || "#7c8aa5",
+      attributionLogo: false,   // 거래량 막대를 가려서 끄고, 출처는 푸터에 표기
     },
     grid: {
       vertLines: { color: css.getPropertyValue("--line").trim() || "#1e293b" },
       horzLines: { color: css.getPropertyValue("--line").trim() || "#1e293b" },
     },
-    timeScale: { timeVisible: true, borderVisible: false },
+    timeScale: { timeVisible: true, borderVisible: false, rightOffset: 4 },
     rightPriceScale: { borderVisible: false },
     crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
   });
   candleSeries = chart.addCandlestickSeries({
     upColor: "#f87171", wickUpColor: "#f87171", borderUpColor: "#f87171",     // 한국 관례: 상승=빨강
     downColor: "#60a5fa", wickDownColor: "#60a5fa", borderDownColor: "#60a5fa",
+    // 원화 가격은 소수점 없이 천 단위 구분 (거래량 축은 기본 K/M 표기 유지)
+    priceFormat: { type: "custom", minMove: 1, formatter: (p) => Math.round(p).toLocaleString("ko-KR") },
   });
   volumeSeries = chart.addHistogramSeries({
     priceFormat: { type: "volume" },
@@ -165,7 +184,8 @@ async function loadChart(tf) {
     if (epoch !== chartState.epoch) return;
     chartState.candles = body.candles || [];
     setSeriesData();
-    chart.timeScale().fitContent();
+    // 양 끝에 여백을 둬 첫/마지막 축 라벨이 잘리지 않게 한다
+    chart.timeScale().setVisibleLogicalRange({ from: -3, to: chartState.candles.length + 3 });
     $("#chart-note").textContent = noteText();
   } catch (e) {
     $("#chart-note").textContent = "차트를 불러오지 못했습니다";
@@ -246,6 +266,12 @@ async function loadFeed(kind, listId) {
 
 // ---- 토론방 -----------------------------------------------------------------------
 
+// D1 datetime('now')는 "YYYY-MM-DD HH:MM:SS"(UTC)
+function boardTime(raw) {
+  const t = Date.parse(String(raw).replace(" ", "T") + "Z");
+  return Number.isNaN(t) ? String(raw) : fmtKst(t);
+}
+
 async function loadBoard() {
   const el = $("#board-list");
   try {
@@ -261,7 +287,7 @@ async function loadBoard() {
     }
     el.innerHTML = body.items.map((p) => `<li data-id="${p.id}">
       <div class="board-head"><b>${esc(p.nick)}</b>
-        <span class="muted">${esc(String(p.created_at).replace("T", " ").slice(0, 16))} UTC</span>
+        <span class="muted">${esc(boardTime(p.created_at))}</span>
         ${p.deletable ? '<button class="board-del-open" type="button">삭제</button>' : ""}</div>
       <div class="board-body">${esc(p.body)}</div>
       <div class="board-del" hidden>

@@ -19,8 +19,9 @@ async function quoteOne(symbol) {
   );
   const price = meta.regularMarketPrice ?? closes[closes.length - 1] ?? null;
   const prev = meta.chartPreviousClose ?? meta.previousClose ?? null;
-  // 스파크라인은 40포인트면 충분 - 페이로드를 줄인다
-  const step = Math.max(1, Math.floor(closes.length / 40));
+  // 스파크라인은 40포인트면 충분 - 페이로드를 줄인다.
+  // 마지막 점(현재가)은 반드시 포함해야 선 끝이 표시 가격과 맞는다.
+  const step = Math.max(1, Math.ceil(closes.length / 40));
   return {
     symbol: meta.symbol || symbol,
     currency: meta.currency || "",
@@ -30,7 +31,7 @@ async function quoteOne(symbol) {
     prevClose: prev,
     changePct:
       price !== null && prev ? Math.round(((price - prev) / prev) * 10000) / 100 : null,
-    spark: closes.filter((_, i) => i % step === 0),
+    spark: closes.filter((_, i) => i % step === 0 || i === closes.length - 1),
     time: meta.regularMarketTime || null,
   };
 }

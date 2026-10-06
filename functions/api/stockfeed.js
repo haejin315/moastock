@@ -1,6 +1,6 @@
 // GET /api/stockfeed?code=005930&kind=news|disclosure
 // 종목별 뉴스(네이버 뉴스 집계)와 공시(KOSCOM 공시, 네이버 제공)를 중계한다.
-import { json, bad, cached, fetchUpstream } from "./_utils.js";
+import { json, bad, cached, fetchUpstream, decodeEntities } from "./_utils.js";
 
 const CACHE_SEC = 300;
 
@@ -17,7 +17,7 @@ export async function onRequestGet(context) {
         await fetchUpstream(`https://m.stock.naver.com/api/stock/${code}/disclosure?pageSize=20`)
       ).json();
       const items = (Array.isArray(body) ? body : []).map((d) => ({
-        title: d.title,
+        title: decodeEntities(d.title || ""),
         datetime: d.datetime,
         author: d.author || "",
         url: `https://m.stock.naver.com/domestic/stock/${code}/disclosure`,
@@ -31,7 +31,7 @@ export async function onRequestGet(context) {
     for (const group of Array.isArray(body) ? body : []) {
       for (const n of group.items || []) {
         items.push({
-          title: String(n.title || "").replace(/<[^>]+>/g, ""),
+          title: decodeEntities(String(n.title || "").replace(/<[^>]+>/g, "")),
           press: n.officeName || "",
           datetime: n.datetime || "",
           url: `https://n.news.naver.com/mnews/article/${n.officeId}/${n.articleId}`,

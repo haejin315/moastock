@@ -45,3 +45,18 @@ export async function fetchUpstream(url, accept = "application/json") {
   if (!resp.ok) throw new Error(`upstream ${resp.status}`);
   return resp;
 }
+
+// 원본 피드의 HTML 엔티티를 평문으로 되돌린다. 화면 출력 시 다시 이스케이프되므로
+// 여기서 풀지 않으면 "&quot;" 같은 글자가 그대로 보인다. &amp;는 마지막에 풀어야
+// "&amp;quot;"가 따옴표로 이중 해석되지 않는다.
+export function decodeEntities(text) {
+  return String(text)
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&apos;/g, "'")
+    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16)))
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&");
+}
