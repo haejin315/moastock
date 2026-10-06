@@ -1,0 +1,20 @@
+# 모아스톡 실시간 채팅 Worker - Durable Objects(SQLite)만 담는다.
+# 사이트(Pages)의 /api/chat/* 가 이 Worker의 DO에 바인딩으로 붙으므로 Worker 자체 주소는 열지 않는다.
+#   배포: npx wrangler deploy   (chat/ 에서)
+name = "moastock-chat"
+main = "src/index.js"
+compatibility_date = "2026-09-01"
+workers_dev = false
+
+[[durable_objects.bindings]]
+name = "CHAT_LOBBY"
+class_name = "Lobby"
+
+[[durable_objects.bindings]]
+name = "CHAT_ROOM"
+class_name = "ChatRoom"
+
+# 무료 플랜은 SQLite 저장 방식 DO만 쓸 수 있다
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Lobby", "ChatRoom"]

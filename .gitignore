@@ -6,3 +6,4 @@ node_modules/
 rag/.env
 rag/**/__pycache__/
 .wrangler-home/
+chat/.wrangler/

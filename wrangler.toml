@@ -7,3 +7,14 @@ pages_build_output_dir = "public"
 binding = "BOARD_DB"
 database_name = "moastock-board"
 database_id = "498f2b60-d42e-4b64-8b08-322a24d91281"
+
+# 실시간 채팅 (chat/ Worker "moastock-chat"의 Durable Object에 바인딩)
+[[durable_objects.bindings]]
+name = "CHAT_LOBBY"
+class_name = "Lobby"
+script_name = "moastock-chat"
+
+[[durable_objects.bindings]]
+name = "CHAT_ROOM"
+class_name = "ChatRoom"
+script_name = "moastock-chat"

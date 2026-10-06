@@ -25,9 +25,12 @@ test("HTML이 참조하는 로컬 파일(script/css/link)이 모두 존재", () 
 });
 
 test("프런트 스크립트·Functions 문법 오류 없음", () => {
+  const jsUnder = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
+    e.isDirectory() ? jsUnder(join(dir, e.name)) : e.name.endsWith(".js") ? [join(dir, e.name)] : []);
   const files = [
     ...readdirSync(PUB).filter((x) => x.endsWith(".js")).map((x) => join(PUB, x)),
-    ...readdirSync(join(ROOT, "functions", "api")).map((x) => join(ROOT, "functions", "api", x)),
+    ...jsUnder(join(ROOT, "functions")),
+    ...jsUnder(join(ROOT, "chat", "src")),
   ];
   for (const f of files) {
     const r = spawnSync(process.execPath, ["--check", f], { encoding: "utf8" });
