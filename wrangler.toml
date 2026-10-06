@@ -5,11 +5,10 @@ name = "moastock"
 main = "src/worker.js"
 compatibility_date = "2026-09-01"
 
-# 도메인: 존(moastock.co.kr)의 프록시 트래픽을 이 Worker가 받는다.
-# (DNS의 CNAME 레코드는 프록시용 자리표시자일 뿐, 요청은 원본으로 가지 않고 Worker가 처리)
+# 도메인: Worker 사용자 지정 도메인 (DNS 레코드·인증서는 Cloudflare가 자동 관리)
 routes = [
-  { pattern = "moastock.co.kr/*", zone_name = "moastock.co.kr" },
-  { pattern = "www.moastock.co.kr/*", zone_name = "moastock.co.kr" },
+  { pattern = "moastock.co.kr", custom_domain = true },
+  { pattern = "www.moastock.co.kr", custom_domain = true },
 ]
 
 # 정적 파일: /api/* 만 Worker 코드가 먼저 받고, 나머지는 public/ 파일을 바로 내보낸다

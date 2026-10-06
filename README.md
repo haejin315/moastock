@@ -101,11 +101,10 @@ Workers Builds(GitHub 연동)의 **빌드 명령이 `npm test`**, 배포 명령�
 
 ## 배포 (Cloudflare Worker)
 
-- 자동: Cloudflare 대시보드 → Workers & Pages → `moastock` → Settings → Build → Connect(GitHub 저장소),
-  Build command `npm test`, Deploy command `npx wrangler deploy`, 브랜치 `main`
+- 자동(연결됨): Workers Builds ← GitHub `haejin315/moastock` main. Build `npm test` → Deploy `npx wrangler deploy`
 - 수동: `npx wrangler deploy`
 - 비밀값: `npx wrangler secret put DART_API_KEY` — opendart.fss.or.kr 무료 발급
-- 도메인: `wrangler.toml`의 `routes` (존의 프록시 트래픽을 Worker가 처리)
+- 도메인: `wrangler.toml`의 `routes`(사용자 지정 도메인 moastock.co.kr·www, DNS·인증서 자동)
 
 ## 데이터 출처와 고지
 
