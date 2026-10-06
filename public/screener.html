@@ -70,16 +70,23 @@
     </div>
     <div class="ctrl-row chips" id="formula-chips"></div>
     <div class="ctrl-row chips" id="sort-chips"></div>
+    <details class="palette-wrap" id="palette-wrap">
+      <summary>수식 블록</summary>
     <div class="palette" id="formula-palette" aria-label="수식 블록"></div>
     <p class="hint muted" id="formula-help">
       블록을 수식 칸으로 끌어다 놓거나 클릭하면 커서 위치에 들어갑니다(몇 번이든 다시 쓸 수 있습니다) ·
       직접 입력해도 이름·숫자·기호가 완성되면 블록으로 바뀝니다 · 블록이 되지 않은 글자는 수식에 쓸 수 없는 단어입니다 ·
       업종·종목명 같은 문자 항목은 계산할 수 없어 넣을 수 없습니다 · 컬럼 제목을 눌러도 정렬됩니다
     </p>
+    </details>
     <p class="hint" id="formula-error" hidden></p>
   </section>
 
   <section class="card table-card">
+    <div class="m-sort">
+      <label for="m-sort-key" class="muted">정렬 기준</label>
+      <select id="m-sort-key"></select>
+    </div>
     <div class="table-scroll">
       <table class="quotes screener" id="screener-table">
         <thead><tr id="head-row"></tr></thead>

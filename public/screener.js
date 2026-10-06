@@ -31,21 +31,23 @@ const COLUMNS = [
   { key: "volume", label: "거래량", fmt: fmtBig, w: 92 },
   { key: "value", label: "거래대금", fmt: fmtBig, w: 96 },
   { key: "marketCap", label: "시가총액", fmt: fmtBig, w: 96 },
-  { key: "per", label: "PER", fmt: fmtRatio, w: 78 },
-  { key: "pbr", label: "PBR", fmt: fmtRatio, w: 78 },
-  { key: "eps", label: "EPS", fmt: fmtPrice, w: 90 },
-  { key: "bps", label: "BPS", fmt: fmtPrice, w: 90 },
-  { key: "roe", label: "ROE%", fmt: fmtRatio, w: 78 },
+  { key: "per", label: "PER", full: "주가수익비율", fmt: fmtRatio, w: 78 },
+  { key: "pbr", label: "PBR", full: "주가순자산비율", fmt: fmtRatio, w: 78 },
+  { key: "eps", label: "EPS", full: "주당순이익", fmt: fmtPrice, w: 90 },
+  { key: "bps", label: "BPS", full: "주당순자산", fmt: fmtPrice, w: 90 },
+  { key: "roe", label: "ROE%", full: "자기자본이익률(%)", fmt: fmtRatio, w: 78 },
   { key: "netIncome", label: "순이익", fmt: fmtBig, w: 96 },
   { key: "equity", label: "순자산", fmt: fmtBig, w: 96 },
-  { key: "shares", label: "주식수", fmt: fmtBig, w: 104 },
-  { key: "dividendYield", label: "배당률%", fmt: fmtRatio, w: 84 },
+  { key: "shares", label: "주식수", full: "상장주식수", fmt: fmtBig, w: 104 },
+  { key: "dividendYield", label: "배당률%", full: "배당수익률(%)", fmt: fmtRatio, w: 84 },
   { key: "dps", label: "주당배당금", fmt: fmtPrice, w: 100 },
-  { key: "foreignRate", label: "외인%", fmt: fmtRatio, w: 78 },
-  { key: "high52w", label: "52주고", fmt: fmtPrice, w: 92 },
-  { key: "low52w", label: "52주저", fmt: fmtPrice, w: 92 },
-  { key: "pos52", label: "52주위치%", fmt: fmtRatio, w: 94 },
+  { key: "foreignRate", label: "외인%", full: "외국인보유비율(%)", fmt: fmtRatio, w: 78 },
+  { key: "high52w", label: "52주고", full: "52주 최고가", fmt: fmtPrice, w: 92 },
+  { key: "low52w", label: "52주저", full: "52주 최저가", fmt: fmtPrice, w: 92 },
+  { key: "pos52", label: "52주위치%", full: "52주 위치(%)", fmt: fmtRatio, w: 94 },
 ];
+// label: 표 제목(폭이 좁아 짧게), full: 줄임말 없는 이름 - 카드·정렬·컬럼 메뉴·제목 툴팁에 쓴다
+for (const c of COLUMNS) c.full ??= c.label;
 const COL_BY_KEY = new Map(COLUMNS.map((c) => [c.key, c]));
 
 const COLUMN_PRESETS = {
@@ -217,7 +219,7 @@ function buildIndustryMenu() {
 
 function buildColumnMenu() {
   $("#column-list").innerHTML = COLUMNS.map((c) =>
-    `<label><input type="checkbox" value="${c.key}" ${state.columns.includes(c.key) ? "checked" : ""}> ${esc(c.label)}</label>`,
+    `<label><input type="checkbox" value="${c.key}" ${state.columns.includes(c.key) ? "checked" : ""}> ${esc(c.full)}</label>`,
   ).join("");
   updateColumnCount();
 }
@@ -294,9 +296,9 @@ const defaultDir = (key) => (key === "name" || COL_BY_KEY.get(key)?.text ? 1 : -
 
 function sortLabel(key) {
   if (key === "name") return "종목";
-  if (key === "change") return "등락률%";
+  if (key === "change") return "등락률(%)";
   if (key.startsWith("__f")) return state.formulas.find((f) => formulaKey(f) === key)?.name || "수식";
-  return COL_BY_KEY.get(key)?.label || key;
+  return COL_BY_KEY.get(key)?.full || key;
 }
 
 // 저장 시 수식 키(__f{id})는 세션마다 바뀌므로 수식 원문으로 바꿔 둔다
@@ -338,7 +340,18 @@ function removeSort(key) {
   saveSorts();
 }
 
+// 휴대폰에서는 표 제목줄이 숨으므로 정렬 기준을 선택 상자로 고른다 (방향·해제는 정렬 칩에서)
+function renderMobileSort() {
+  const sel = $("#m-sort-key");
+  if (!sel) return;
+  const keys = ["change", ...state.columns.filter((k) => !COL_BY_KEY.get(k).text), ...state.formulas.map(formulaKey)];
+  const cur = state.sorts[0]?.key;
+  sel.innerHTML = (cur ? "" : '<option value="">시가총액순(기본)</option>') +
+    [...new Set(keys)].map((k) => `<option value="${esc(k)}" ${k === cur ? "selected" : ""}>${esc(sortLabel(k))}</option>`).join("");
+}
+
 function renderSortChips() {
+  renderMobileSort();
   const el = $("#sort-chips");
   if (!state.sorts.length) {
     el.innerHTML = '<span class="muted">정렬 기준 없음 — 컬럼 제목을 누르면 추가됩니다 (기본: 시가총액순)</span>';
@@ -367,7 +380,7 @@ function sparkSvg(points, change, w = 84, h = 26) {
     .map((v, i) => `${((i / (points.length - 1)) * w).toFixed(1)},${(h - 2 - ((v - min) / span) * (h - 4)).toFixed(1)}`)
     .join(" ");
   const color = change > 0 ? "var(--up)" : change < 0 ? "var(--down)" : "var(--muted)";
-  return `<svg class="spark" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">` +
+  return `<svg class="spark" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">` +
          `<polyline points="${coords}" style="stroke:${color}"/></svg>`;
 }
 
@@ -420,7 +433,7 @@ function renderHead() {
   let total = FIXED_W.star + FIXED_W.name + FIXED_W.chart + FIXED_W.change;
   for (const key of state.columns) {
     const c = COL_BY_KEY.get(key);
-    cells.push(`<th class="${c.text ? "" : "num"}" style="width:${c.w}px" data-k="${c.key}">${esc(c.label)}</th>`);
+    cells.push(`<th class="${c.text ? "" : "num"}" style="width:${c.w}px" data-k="${c.key}" title="${esc(c.full)}">${esc(c.label)}</th>`);
     total += c.w;
   }
   for (const f of state.formulas) {
@@ -446,8 +459,9 @@ function renderHead() {
 function cellHtml(row, key) {
   const c = COL_BY_KEY.get(key);
   const v = row[key];
-  if (c.text) return `<td class="industry-cell">${esc(c.fmt(v))}</td>`;
-  return `<td class="num">${c.fmt(v)}</td>`;
+  // data-label: 휴대폰 카드 보기에서 "이름 값"으로 보여줄 때 쓴다
+  if (c.text) return `<td class="industry-cell c-metric c-text c-key-${key}" data-label="${esc(c.full)}">${esc(c.fmt(v))}</td>`;
+  return `<td class="num c-metric c-key-${key}" data-label="${esc(c.full)}">${c.fmt(v)}</td>`;
 }
 
 function render() {
@@ -470,13 +484,16 @@ function render() {
   $("#screener-table tbody").innerHTML = slice.map((r, idx) => {
     const cached = sparkCache.get(r.code);
     const cells = [
-      `<td><button class="star ${watchHasCode(r) ? "on" : ""}" data-code="${r.code}" title="관심종목">★</button></td>`,
-      `<td><span class="rank muted">${(state.page - 1) * PAGE + idx + 1}</span> ${esc(r.name)}
+      `<td class="c-star"><button class="star ${watchHasCode(r) ? "on" : ""}" data-code="${r.code}" title="관심종목">★</button></td>`,
+      `<td class="c-name"><span class="rank muted">${(state.page - 1) * PAGE + idx + 1}</span> ${esc(r.name)}
         <div class="sym">${r.code} · ${r.market === "KOSDAQ" ? "코스닥" : "코스피"}</div></td>`,
-      `<td data-spark="${r.code}">${cached ? sparkSvg(cached.spark, r.change) : '<span class="muted">·</span>'}</td>`,
-      `<td class="num ${chgClass(r.change)}">${r.change === null || r.change === undefined ? "-" : r.change.toFixed(2)}</td>`,
+      // 휴대폰 카드 머리: 현재가 + 등락률 (데스크톱 표에서는 숨김)
+      `<td class="c-mhead"><b>${fmtPrice(r.price)}</b><span class="${chgClass(r.change)}">${
+        r.change === null || r.change === undefined ? "-" : (r.change > 0 ? "+" : "") + r.change.toFixed(2) + "%"}</span></td>`,
+      `<td class="c-spark" data-spark="${r.code}">${cached ? sparkSvg(cached.spark, r.change) : '<span class="muted">·</span>'}</td>`,
+      `<td class="num c-change ${chgClass(r.change)}">${r.change === null || r.change === undefined ? "-" : r.change.toFixed(2)}</td>`,
       ...state.columns.map((key) => cellHtml(r, key)),
-      ...state.formulas.map((f) => `<td class="num">${fmtRatio(r[formulaKey(f)] ?? null)}</td>`),
+      ...state.formulas.map((f) => `<td class="num c-metric c-formula" data-label="${esc(f.name)}">${fmtRatio(r[formulaKey(f)] ?? null)}</td>`),
     ];
     return `<tr class="rowlink" data-code="${r.code}">${cells.join("")}</tr>`;
   }).join("");
@@ -764,6 +781,17 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") closePickers();
 });
 pickers.forEach((d) => d.addEventListener("toggle", () => { if (d.open) closePickers(d); }));
+
+$("#m-sort-key").addEventListener("change", (e) => {
+  const key = e.target.value;
+  if (!key) return;
+  if (state.sorts[0]?.key !== key) pickSort(key);
+  state.page = 1;
+  render();
+});
+
+// 수식 블록 팔레트: 넓은 화면에서는 펼쳐 두고, 휴대폰에서는 접어 둔다
+if (matchMedia("(min-width: 721px)").matches) $("#palette-wrap").open = true;
 
 $("#prev").addEventListener("click", () => { state.page--; render(); });
 $("#next").addEventListener("click", () => { state.page++; render(); });

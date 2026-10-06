@@ -77,14 +77,14 @@ function renderFacts(livePrice = null) {
   const marketCap = livePrice && shares ? shares * livePrice : s.marketCap;
   const facts = [
     ["시가총액", fmtBig(marketCap)],
-    ["PER", fmtRatio(s.per)], ["PBR", fmtRatio(s.pbr)],
-    ["EPS", fmtPrice(s.eps)], ["BPS", fmtPrice(s.bps)],
-    ["ROE", s.eps !== null && s.bps ? (s.eps / s.bps * 100).toFixed(1) + "%" : "-"],
+    ["주가수익비율(PER)", fmtRatio(s.per)], ["주가순자산비율(PBR)", fmtRatio(s.pbr)],
+    ["주당순이익(EPS)", fmtPrice(s.eps)], ["주당순자산(BPS)", fmtPrice(s.bps)],
+    ["자기자본이익률(ROE)", s.eps !== null && s.bps ? (s.eps / s.bps * 100).toFixed(1) + "%" : "-"],
     ["순이익(추정)", s.eps !== null && shares ? fmtBig(s.eps * shares) : "-"],
     ["순자산(추정)", s.bps !== null && shares ? fmtBig(s.bps * shares) : "-"],
     ["배당수익률", s.dividendYield !== null ? s.dividendYield.toFixed(2) + "%" : "-"],
-    ["외국인 비율", s.foreignRate !== null ? s.foreignRate.toFixed(2) + "%" : "-"],
-    ["52주 최고", fmtPrice(s.high52w)], ["52주 최저", fmtPrice(s.low52w)],
+    ["외국인보유비율", s.foreignRate !== null ? s.foreignRate.toFixed(2) + "%" : "-"],
+    ["52주 최고가", fmtPrice(s.high52w)], ["52주 최저가", fmtPrice(s.low52w)],
   ];
   $("#facts").innerHTML = facts.map(([k, v]) =>
     `<div class="fact"><div class="fact-k">${k}</div><div class="fact-v">${v}</div></div>`).join("");

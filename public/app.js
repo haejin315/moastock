@@ -146,7 +146,10 @@ async function loadDart() {
       return;
     }
     if (!body.items || !body.items.length) {
-      el.innerHTML = `<li class="muted">최근 7일 공시가 없습니다${body.error ? " (" + esc(body.error) + ")" : ""}</li>`;
+      // 원본 오류 문자열은 사용자에게 보이지 않게 (원인은 /api/dart 응답에 남아 있다)
+      el.innerHTML = body.error
+        ? '<li class="muted">공시를 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.</li>'
+        : '<li class="muted">최근 7일 공시가 없습니다</li>';
       return;
     }
     el.innerHTML = body.items.map((d) => `<li>
