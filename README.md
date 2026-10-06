@@ -47,10 +47,28 @@ npx wrangler pages dev public
 # DART 공시까지 보려면: .dev.vars 파일에 DART_API_KEY=... 추가
 ```
 
+## 테스트와 배포 흐름 (CI/CD)
+
+```bash
+npm test     # node --test "tests/*.test.mjs" - 외부 의존성 없음
+```
+
+| 테스트 | 내용 |
+|---|---|
+| `tests/formula.test.mjs` | 스크리너 수식 파서 |
+| `tests/api.test.mjs` | Pages Functions(dart·quote·stockfeed·news·screener·chart) - fetch·엣지 캐시를 가짜로 바꿔 네트워크 없이 검증. API 키가 응답에 새지 않는지 포함 |
+| `tests/site.test.mjs` | HTML이 참조하는 파일 존재, JS 문법(`node --check`), 면책 고지, 비밀값 유출, 스냅샷 형식 |
+
+Cloudflare Pages의 **빌드 명령이 `npm test`** 다. 푸시하면 Pages가 테스트를 돌리고,
+**하나라도 실패하면 빌드가 실패해 배포되지 않는다**(기존 배포 유지). Node 버전은 `.node-version`(22).
+
+- `main` 푸시 → 테스트 → 운영 배포 (moastock.co.kr)
+- 다른 브랜치 푸시 → 테스트 → 미리보기 배포 (`<브랜치>.moastock.pages.dev`)
+
 ## 배포 (Cloudflare Pages)
 
 1. Cloudflare 대시보드 → Workers & Pages → Create → Pages → Connect to Git → 이 저장소 선택
-2. Build command: (비움) / Build output directory: `public`
+2. Build command: `npm test` / Build output directory: `public`
 3. Settings → Environment variables → `DART_API_KEY` (Secret) 추가 — opendart.fss.or.kr 무료 발급
 4. 이후 main 푸시마다 자동 배포
 

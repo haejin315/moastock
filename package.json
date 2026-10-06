@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test tests/formula.test.mjs",
+    "test": "node --test \"tests/*.test.mjs\"",
     "dev": "wrangler pages dev public"
   }
 }
