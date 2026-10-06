@@ -3,7 +3,7 @@
 //   POST /api/chat/rooms            방 만들기 {title, password?, capacity, client}
 //   GET  /api/chat/rooms/:id/ws     WebSocket 입장 (비밀번호·닉네임은 연결 후 첫 메시지로)
 // 로비의 내부 경로(상태 갱신·삭제)는 여기서 열지 않는다 - 방 DO만 부를 수 있다.
-import { json, bad } from "../_utils.js";
+import { json, bad } from "./_utils.js";
 
 const ROOM_ID = /^[a-z0-9]{6,16}$/;
 

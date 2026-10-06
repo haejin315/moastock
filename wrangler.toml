@@ -1,20 +1,44 @@
+# 모아스톡 - Cloudflare Worker 하나: 정적 페이지 + API + 실시간 채팅(Durable Objects)
+#   로컬:  npx wrangler dev
+#   배포:  npx wrangler deploy   (main 푸시 시 Workers Builds가 npm test 후 자동 배포)
 name = "moastock"
+main = "src/worker.js"
 compatibility_date = "2026-09-01"
-pages_build_output_dir = "public"
 
-# 종목 토론방 저장소 (functions/api/board.js)
+# 도메인: 존(moastock.co.kr)의 프록시 트래픽을 이 Worker가 받는다.
+# (DNS의 CNAME 레코드는 프록시용 자리표시자일 뿐, 요청은 원본으로 가지 않고 Worker가 처리)
+routes = [
+  { pattern = "moastock.co.kr/*", zone_name = "moastock.co.kr" },
+  { pattern = "www.moastock.co.kr/*", zone_name = "moastock.co.kr" },
+]
+
+# 정적 파일: /api/* 만 Worker 코드가 먼저 받고, 나머지는 public/ 파일을 바로 내보낸다
+# (/stock → stock.html 처럼 확장자 없는 주소도 처리)
+[assets]
+directory = "public"
+binding = "ASSETS"
+run_worker_first = ["/api/*"]
+html_handling = "auto-trailing-slash"
+
+# 종목 토론방 저장소 (src/api/board.js)
 [[d1_databases]]
 binding = "BOARD_DB"
 database_name = "moastock-board"
 database_id = "498f2b60-d42e-4b64-8b08-322a24d91281"
 
-# 실시간 채팅 (chat/ Worker "moastock-chat"의 Durable Object에 바인딩)
+# 실시간 채팅 (src/chat/*) - 로비 1개 + 방마다 1개
 [[durable_objects.bindings]]
 name = "CHAT_LOBBY"
 class_name = "Lobby"
-script_name = "moastock-chat"
 
 [[durable_objects.bindings]]
 name = "CHAT_ROOM"
 class_name = "ChatRoom"
-script_name = "moastock-chat"
+
+# 무료 플랜은 SQLite 저장 방식 DO만 쓸 수 있다
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Lobby", "ChatRoom"]
+
+# 비밀값: DART_API_KEY  →  npx wrangler secret put DART_API_KEY
+# 로컬 개발은 .dev.vars 에서 읽는다

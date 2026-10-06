@@ -2,7 +2,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { LIMITS, checkCapacity, checkMessage, checkNick, checkPassword, checkTitle, cleanLine,
-         isRoomId, rateAllow, uniqueNick } from "../chat/src/rules.js";
+         isRoomId, rateAllow, uniqueNick } from "../src/chat/rules.js";
 
 test("제한값은 무료 플랜 안에서 보수적으로", () => {
   assert.ok(LIMITS.maxRooms <= 20 && LIMITS.maxCapacity <= 30 && LIMITS.history <= 100);

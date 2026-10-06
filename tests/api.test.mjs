@@ -1,13 +1,13 @@
 import test, { beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { bodyOf, ctx, installFakeCache, mockFetch } from "./helpers.mjs";
-import { decodeEntities, json, bad } from "../functions/api/_utils.js";
-import * as dart from "../functions/api/dart.js";
-import * as quote from "../functions/api/quote.js";
-import * as stockfeed from "../functions/api/stockfeed.js";
-import * as news from "../functions/api/news.js";
-import * as screener from "../functions/api/screener.js";
-import * as chart from "../functions/api/chart.js";
+import { decodeEntities, json, bad } from "../src/api/_utils.js";
+import * as dart from "../src/api/dart.js";
+import * as quote from "../src/api/quote.js";
+import * as stockfeed from "../src/api/stockfeed.js";
+import * as news from "../src/api/news.js";
+import * as screener from "../src/api/screener.js";
+import * as chart from "../src/api/chart.js";
 
 beforeEach(() => installFakeCache());
 

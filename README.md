@@ -1,7 +1,7 @@
 # 모아스톡 (moastock)
 
 국내외 지수·주식 시세, DART 공시, 증권 뉴스를 한 화면에 모아보는 대시보드.
-Cloudflare Pages(정적) + Pages Functions(서버리스 API 프록시)로 동작합니다.
+Cloudflare Worker 하나(정적 페이지 + 서버리스 API 프록시 + 실시간 채팅 Durable Objects)로 동작합니다.
 
 ## 기능
 
@@ -24,8 +24,7 @@ Cloudflare Pages(정적) + Pages Functions(서버리스 API 프록시)로 동작
 ### 채팅 구조와 무료 한도
 
 Cloudflare Durable Objects(SQLite, 무료 플랜 지원) + WebSocket 휴면 API. 방 하나 = DO 하나, 방 목록 = 로비 DO 하나.
-DO는 Pages에서 정의할 수 없어 별도 Worker `chat/`(`moastock-chat`)에 두고, 사이트의 `/api/chat/*`가 DO 바인딩으로 연결한다
-(Worker 자체 주소는 열지 않음).
+DO 클래스(`src/chat/`)는 사이트와 같은 Worker에 있고, `/api/chat/*`가 DO 바인딩으로 연결한다.
 
 | 제한 | 값 | 이유 |
 |---|---|---|
@@ -36,28 +35,35 @@ DO는 Pages에서 정의할 수 없어 별도 Worker `chat/`(`moastock-chat`)에
 | 보관 | 방마다 최근 100개 | |
 | 빈 방 정리 | 6시간 | 기본 방 "전체 채팅"은 유지 |
 
-배포는 둘로 나뉜다: 채팅 Worker는 `cd chat && npx wrangler deploy`(수동), 사이트는 main 푸시 시 자동.
-채팅 서버 로직을 바꿨다면 Worker를 먼저 배포한다.
 
 ## 데이터 아키텍처 (2계층)
 
 | 계층 | 내용 | 갱신 |
 |---|---|---|
-| 일일 스냅샷 | 전 종목 펀더멘털 `public/data/snapshot.json` (~800KB) | GitHub Actions 평일 16:40 KST 크론 → `scripts/build_snapshot.py` → 커밋 → CF 자동 배포 |
+| 일일 스냅샷 | 전 종목 펀더멘털 `public/data/snapshot.json` (~800KB) | GitHub Actions 평일 16:40 KST 크론 → `scripts/build_snapshot.py` → 커밋 → Worker 자동 배포 |
 | 장중 실시간 | 시세/등락/거래량/거래대금/시총 `/api/screener` | 엣지 캐시 60초, 클라이언트가 종목코드로 병합 (PER/PBR은 현재가로 재계산) |
 
 ## 구조
 
 ```
-public/            # 정적 프론트엔드 (프레임워크·빌드 없음)
+wrangler.toml      # Worker 설정: 정적 파일·D1·Durable Objects·도메인 라우트
+public/            # 정적 프론트엔드 (프레임워크·빌드 없음) - Workers Static Assets로 바로 서빙
   screener.html/js # 스크리너 - 필터·정렬·수식 전부 클라이언트에서
   formula.js       # 수식 파서 (재귀 하강, eval 미사용) - tests/formula.test.mjs
+  formula-editor.js# 수식 블록 편집기
+  chat.js          # 오른쪽 아래 채팅 창
   data/snapshot.json
-functions/api/
+src/
+  worker.js        # 진입점: /api/* → router, 나머지 → 정적 파일, DO 클래스 내보내기
+  router.js        # /api/<이름> → src/api/<이름>.js (onRequestGet 등) - tests/router.test.mjs
+  chat/            # 채팅 Durable Objects: lobby.js(방 목록), room.js(방), rules.js(제한·검사)
+  api/
   quote.js         # 시세+스파크라인 (Yahoo Finance v8 chart 프록시, 30s 엣지 캐시)
   screener.js      # 전 종목 실시간 시세 (네이버증권 프록시, 60s 캐시)
   news.js          # 언론사 RSS → JSON (허용 목록 방식, 5min 캐시)
-  dart.js          # DART 최신 공시 (API 키는 서버 환경변수, 3min 캐시)
+  dart.js          # DART 최신 공시 (API 키는 Worker 비밀값, 3min 캐시)
+  board.js         # 종목 토론방 (D1)
+  chat.js          # 채팅 프록시 → Durable Objects
   _utils.js        # 응답/캐시/업스트림 공통
 scripts/build_snapshot.py    # 스냅샷 생성기 (.github/workflows/snapshot.yml 크론)
 ```
@@ -69,8 +75,9 @@ DART API 키가 클라이언트로 내려가지 않으며, 엣지 캐시로 원�
 ## 로컬 개발
 
 ```bash
-npx wrangler pages dev public
+npx wrangler dev          # http://127.0.0.1:8787 - 정적 페이지·API·채팅·D1(로컬) 모두
 # DART 공시까지 보려면: .dev.vars 파일에 DART_API_KEY=... 추가
+# (로컬 런타임은 OpenDART의 TLS 방식(RSA 키교환)을 막아 DART만 로컬에서 실패할 수 있다. 운영은 정상)
 ```
 
 ## 테스트와 배포 흐름 (CI/CD)
@@ -82,23 +89,23 @@ npm test     # node --test "tests/*.test.mjs" - 외부 의존성 없음
 | 테스트 | 내용 |
 |---|---|
 | `tests/formula.test.mjs` | 스크리너 수식 파서 |
-| `tests/api.test.mjs` | Pages Functions(dart·quote·stockfeed·news·screener·chart) - fetch·엣지 캐시를 가짜로 바꿔 네트워크 없이 검증. API 키가 응답에 새지 않는지 포함 |
+| `tests/api.test.mjs` | API(dart·quote·stockfeed·news·screener·chart) - fetch·엣지 캐시를 가짜로 바꿔 네트워크 없이 검증. API 키가 응답에 새지 않는지 포함 |
+| `tests/router.test.mjs` | `/api/*` 분기, 404·405, 예외 시 500(내부 메시지 비노출), 채팅 → 로비 DO 전달 |
+| `tests/chat.test.mjs` | 채팅 제한·입력 검사(제목·닉네임·비밀번호·메시지·속도 제한) |
 | `tests/site.test.mjs` | HTML이 참조하는 파일 존재, JS 문법(`node --check`), 면책 고지, 비밀값 유출, 스냅샷 형식 |
 
-Cloudflare Pages의 **빌드 명령이 `npm test`** 다. 푸시하면 Pages가 테스트를 돌리고,
-**하나라도 실패하면 빌드가 실패해 배포되지 않는다**(기존 배포 유지). Node 버전은 `.node-version`(22).
+Workers Builds(GitHub 연동)의 **빌드 명령이 `npm test`**, 배포 명령이 `npx wrangler deploy`다.
+**테스트가 하나라도 실패하면 배포되지 않는다**(기존 버전 유지). Node 버전은 `.node-version`(22).
 
-- `main` 푸시 → 테스트 → 운영 배포 (moastock.co.kr)
-- 다른 브랜치 푸시 → 테스트 → 미리보기 배포 (`<브랜치>.moastock.pages.dev`)
+- `main` 푸시 → 테스트 → 운영 배포 (moastock.co.kr, www.moastock.co.kr)
 
-## 배포 (Cloudflare Pages)
+## 배포 (Cloudflare Worker)
 
-1. Cloudflare 대시보드 → Workers & Pages → Create → Pages → Connect to Git → 이 저장소 선택
-2. Build command: `npm test` / Build output directory: `public`
-3. Settings → Environment variables → `DART_API_KEY` (Secret) 추가 — opendart.fss.or.kr 무료 발급
-4. 이후 main 푸시마다 자동 배포
-
-또는 CLI: `npx wrangler pages deploy public`
+- 자동: Cloudflare 대시보드 → Workers & Pages → `moastock` → Settings → Build → Connect(GitHub 저장소),
+  Build command `npm test`, Deploy command `npx wrangler deploy`, 브랜치 `main`
+- 수동: `npx wrangler deploy`
+- 비밀값: `npx wrangler secret put DART_API_KEY` — opendart.fss.or.kr 무료 발급
+- 도메인: `wrangler.toml`의 `routes` (존의 프록시 트래픽을 Worker가 처리)
 
 ## 데이터 출처와 고지
 

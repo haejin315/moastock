@@ -29,8 +29,7 @@ test("프런트 스크립트·Functions 문법 오류 없음", () => {
     e.isDirectory() ? jsUnder(join(dir, e.name)) : e.name.endsWith(".js") ? [join(dir, e.name)] : []);
   const files = [
     ...readdirSync(PUB).filter((x) => x.endsWith(".js")).map((x) => join(PUB, x)),
-    ...jsUnder(join(ROOT, "functions")),
-    ...jsUnder(join(ROOT, "chat", "src")),
+    ...jsUnder(join(ROOT, "src")),
   ];
   for (const f of files) {
     const r = spawnSync(process.execPath, ["--check", f], { encoding: "utf8" });
@@ -51,7 +50,7 @@ test("모든 페이지에 제목·viewport·면책 고지가 있다", () => {
 test("배포 파일에 비밀값이 섞이지 않았다", () => {
   const walk = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
     e.isDirectory() ? walk(join(dir, e.name)) : [join(dir, e.name)]);
-  const files = [...walk(PUB), ...walk(join(ROOT, "functions"))].filter((p) => !p.endsWith("snapshot.json"));
+  const files = [...walk(PUB), ...walk(join(ROOT, "src"))].filter((p) => !p.endsWith("snapshot.json"));
   for (const p of files) {
     const text = readFileSync(p, "utf8");
     assert.doesNotMatch(text, /crtfc_key=[0-9a-f]{40}/i, `${p}: DART 키로 보이는 값`);
