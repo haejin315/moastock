@@ -4,7 +4,7 @@
    정렬을 바꾸지 않는다 - 그 수식 컬럼의 헤더를 눌렀을 때만 정렬이 바뀐다.
    전부 클라이언트에서 동작한다. */
 "use strict";
-import { compileFormula } from "./formula.js";
+import { compileFormula, FORMULA_PALETTE } from "./formula.js";
 
 const PAGE = 50;
 
@@ -623,6 +623,119 @@ $("#sort-chips").addEventListener("click", (e) => {
   state.page = 1;
   render();
 });
+
+// ---- 수식 팔레트: 블록을 끌어다 놓거나 클릭해 수식 만들기 -------------------------
+
+const PALETTE_MIME = "application/x-moastock-token";   // 팔레트 블록만 수식 칸에 놓을 수 있다
+const formulaInput = $("#formula");
+
+$("#formula-palette").innerHTML = FORMULA_PALETTE.map((g) => `
+  <span class="palette-group"><span class="palette-label">${esc(g.group)}</span>${g.items.map((it) =>
+    `<button type="button" class="pchip ${g.kind}" draggable="true" data-insert="${esc(it.insert)}"
+      title="${esc(it.tip)}">${esc(it.label)}</button>`).join("")}</span>`).join("");
+
+// 커서(또는 놓은 위치) 자리에 토큰을 넣고 앞뒤 공백을 정리한다
+function insertToken(token, at = formulaInput.selectionStart ?? formulaInput.value.length,
+                     end = formulaInput.selectionEnd ?? at) {
+  const v = formulaInput.value;
+  const before = v.slice(0, at), after = v.slice(end);
+  const opener = /\($/.test(token) || token === "(";
+  const left = before === "" || /[\s(]$/.test(before) ? "" : " ";
+  const right = opener || after === "" || /^[\s),]/.test(after) ? "" : " ";
+  const ins = token === "," ? ", " : left + token + right;
+  formulaInput.value = before + ins + after;
+  const pos = before.length + ins.length;
+  formulaInput.focus();
+  formulaInput.setSelectionRange(pos, pos);
+  validateFormulaLive();
+}
+
+$("#formula-palette").addEventListener("click", (e) => {
+  const chip = e.target.closest(".pchip");
+  if (chip) insertToken(chip.dataset.insert);
+});
+$("#formula-palette").addEventListener("dragstart", (e) => {
+  const chip = e.target.closest(".pchip");
+  if (!chip) return;
+  e.dataTransfer.effectAllowed = "copy";
+  e.dataTransfer.setData(PALETTE_MIME, chip.dataset.insert);
+  chip.classList.add("dragging");
+});
+$("#formula-palette").addEventListener("dragend", (e) => {
+  e.target.closest(".pchip")?.classList.remove("dragging");
+  formulaInput.classList.remove("drop-ok");
+});
+
+// 놓인 지점의 글자 위치 - 입력칸 글꼴로 텍스트 폭을 재서 가장 가까운 경계를 찾는다
+const measureCtx = document.createElement("canvas").getContext("2d");
+function caretFromX(clientX) {
+  const cs = getComputedStyle(formulaInput);
+  measureCtx.font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+  const r = formulaInput.getBoundingClientRect();
+  const x = clientX - r.left - parseFloat(cs.paddingLeft) - parseFloat(cs.borderLeftWidth) + formulaInput.scrollLeft;
+  const v = formulaInput.value;
+  let best = v.length, bestDist = Infinity;
+  for (let i = 0; i <= v.length; i++) {
+    const d = Math.abs(measureCtx.measureText(v.slice(0, i)).width - x);
+    if (d < bestDist) { bestDist = d; best = i; }
+  }
+  return best;
+}
+
+formulaInput.addEventListener("dragover", (e) => {
+  if (!e.dataTransfer.types.includes(PALETTE_MIME)) {
+    e.dataTransfer.dropEffect = "none";      // 정렬 칩·외부 텍스트 등은 놓을 수 없다
+    return;
+  }
+  e.preventDefault();
+  e.dataTransfer.dropEffect = "copy";
+  formulaInput.classList.add("drop-ok");
+});
+formulaInput.addEventListener("dragleave", () => formulaInput.classList.remove("drop-ok"));
+formulaInput.addEventListener("drop", (e) => {
+  e.preventDefault();                          // 브라우저 기본 텍스트 삽입은 항상 막는다
+  formulaInput.classList.remove("drop-ok");
+  const token = e.dataTransfer.getData(PALETTE_MIME);
+  if (!token) return;
+  const at = caretFromX(e.clientX);
+  insertToken(token, at, at);
+});
+
+// 입력 중 실시간 검사: 쓸 수 없는 항목(예: 업종)이나 문법 오류를 바로 알려준다
+const TEXT_COLUMNS = new Set(["업종", "종목", "종목명", "이름", "코드", "종목코드", "시장", "차트"]);
+let liveTimer = null;
+function validateFormulaLive() {
+  clearTimeout(liveTimer);
+  liveTimer = setTimeout(() => {
+    const src = formulaInput.value.trim();
+    const err = $("#formula-error");
+    if (!src) {
+      formulaInput.classList.remove("invalid");
+      if (err.classList.contains("live")) { err.hidden = true; err.classList.remove("live"); }
+      return;
+    }
+    try {
+      compileFormula(src);
+      formulaInput.classList.remove("invalid");
+      if (err.classList.contains("live")) { err.hidden = true; err.classList.remove("live"); }
+    } catch (ex) {
+      // 아직 입력 중일 수 있는 미완성 식(끝이 연산자·여는 괄호)은 오류 표시를 거둔다
+      if (/[-+*/^(,]\s*$/.test(src)) {
+        formulaInput.classList.remove("invalid");
+        if (err.classList.contains("live")) { err.hidden = true; err.classList.remove("live"); }
+        return;
+      }
+      const word = /알 수 없는 항목: (\S+)/.exec(ex.message)?.[1];
+      formulaInput.classList.add("invalid");
+      err.textContent = word && TEXT_COLUMNS.has(word)
+        ? `'${word}'은(는) 숫자가 아닌 문자 항목이라 수식에 쓸 수 없습니다`
+        : ex.message;
+      err.hidden = false;
+      err.classList.add("live");
+    }
+  }, 250);
+}
+formulaInput.addEventListener("input", validateFormulaLive);
 
 let dragFrom = null;
 $("#sort-chips").addEventListener("dragstart", (e) => {

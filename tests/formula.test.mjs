@@ -52,3 +52,24 @@ test("나쁜 수식은 명확한 오류", () => {
   assert.throws(() => compileFormula("PER; alert(1)"), /해석할 수 없습니다/);
   assert.throws(() => compileFormula(""), /비어/);
 });
+
+test("팔레트: 항목은 모두 수식에서 실제로 동작하고, 문자 항목은 없다", async () => {
+  const { FORMULA_PALETTE } = await import("../public/formula.js");
+  const fields = FORMULA_PALETTE.filter((g) => g.kind === "field").flatMap((g) => g.items);
+  assert.ok(fields.length >= 15);
+  for (const it of fields) {
+    const v = compileFormula(it.insert).evaluate(row);
+    assert.equal(typeof v, "number", `${it.label}`);
+  }
+  for (const it of FORMULA_PALETTE.find((g) => g.kind === "func").items) {
+    const args = ["min", "max"].includes(it.label) ? "PER, PBR" : "PER";
+    assert.doesNotThrow(() => compileFormula(`${it.insert}${args})`), it.label);
+  }
+  // 연산 칩만으로 만든 식
+  const op = Object.fromEntries(FORMULA_PALETTE.find((g) => g.kind === "op").items.map((i) => [i.label, i.insert]));
+  assert.equal(compileFormula(`${op["("]}1 ${op["+"]} 2${op[")"]} ${op["×"]} 3 ${op["÷"]} 2 ${op["−"]} 2 ${op["^"]} 2`).evaluate(row), 0.5);
+  // 수식에 쓸 수 없는 항목은 거부
+  for (const bad of ["업종", "종목명", "코드", "시장"]) {
+    assert.throws(() => compileFormula(`${bad} + 1`), /알 수 없는 항목/, bad);
+  }
+});

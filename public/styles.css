@@ -238,3 +238,21 @@ tr.rowlink:hover td { background: rgba(52, 211, 153, 0.05); }
 .sort-chip.on .sort-rank { color: var(--accent); }
 .sort-dir { background: none; border: 0; color: var(--accent); cursor: pointer; font-size: 11px; padding: 0 2px; }
 table.screener th.sorted-primary { color: var(--text); }
+
+/* 수식 팔레트 - 끌어다 놓는 블록 */
+.palette { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 8px; }
+.palette-group { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.palette-label { font-size: 11px; color: var(--muted); margin-right: 2px; }
+.pchip {
+  border: 1px solid var(--line); background: var(--card); color: var(--text);
+  border-radius: 6px; padding: 2px 8px; font-size: 12px; cursor: grab; user-select: none;
+  font-variant-numeric: tabular-nums;
+}
+.pchip:hover { border-color: var(--accent); }
+.pchip:active { cursor: grabbing; }
+.pchip.op { min-width: 24px; text-align: center; font-weight: 600; }
+.pchip.func { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+.pchip.dragging { opacity: 0.4; }
+#formula.drop-ok { border-color: var(--accent); border-style: dashed; }
+#formula.invalid { border-color: var(--up); }
+#formula-error.live { color: var(--up); }

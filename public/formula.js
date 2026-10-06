@@ -150,3 +150,57 @@ export function compileFormula(src) {
 
 // 브라우저 전역 + Node(test) 겸용
 if (typeof window !== "undefined") window.compileFormula = compileFormula;
+
+/* 수식 팔레트: 스크리너에서 끌어다 쓰는 블록 목록.
+   숫자로 계산할 수 있는 항목만 넣는다 - 업종·종목명 같은 문자 항목은 수식에 쓸 수 없으므로 없다.
+   insert는 수식에 실제로 들어가는 토큰, label은 칩에 보이는 글자.
+   (tests/formula.test.mjs가 모든 항목이 실제로 컴파일되는지 검사한다) */
+export const FORMULA_PALETTE = [
+  { group: "시세", kind: "field", items: [
+    { label: "가격", tip: "현재가(원)" },
+    { label: "등락률", tip: "전일 대비 등락률(%)" },
+    { label: "거래량", tip: "누적 거래량(주)" },
+    { label: "거래대금", tip: "누적 거래대금(원)" },
+    { label: "시총", tip: "시가총액(원)" },
+  ] },
+  { group: "가치", kind: "field", items: [
+    { label: "PER", tip: "주가수익비율" },
+    { label: "PBR", tip: "주가순자산비율" },
+    { label: "EPS", tip: "주당순이익(원)" },
+    { label: "BPS", tip: "주당순자산(원)" },
+    { label: "ROE", tip: "EPS÷BPS×100 (%)" },
+  ] },
+  { group: "배당·수급", kind: "field", items: [
+    { label: "배당률", tip: "배당수익률(%)" },
+    { label: "배당금", tip: "주당배당금 추정(원)" },
+    { label: "외국인", tip: "외국인 보유비율(%)" },
+  ] },
+  { group: "재무(추정)", kind: "field", items: [
+    { label: "순이익", tip: "EPS×주식수(원)" },
+    { label: "순자산", tip: "BPS×주식수(원)" },
+    { label: "주식수", tip: "시총÷가격(주)" },
+  ] },
+  { group: "52주", kind: "field", items: [
+    { label: "고가52", tip: "52주 최고가(원)" },
+    { label: "저가52", tip: "52주 최저가(원)" },
+    { label: "위치52", tip: "52주 범위 안 현재 위치(0~100)" },
+  ] },
+  { group: "연산", kind: "op", items: [
+    { label: "+", insert: "+", tip: "더하기" },
+    { label: "−", insert: "-", tip: "빼기" },
+    { label: "×", insert: "*", tip: "곱하기" },
+    { label: "÷", insert: "/", tip: "나누기" },
+    { label: "^", insert: "^", tip: "거듭제곱" },
+    { label: "(", insert: "(", tip: "여는 괄호" },
+    { label: ")", insert: ")", tip: "닫는 괄호" },
+    { label: ",", insert: ",", tip: "함수 인자 구분 (min·max)" },
+  ] },
+  { group: "함수", kind: "func", items: [
+    { label: "abs", insert: "abs(", tip: "절댓값" },
+    { label: "log", insert: "log(", tip: "자연로그" },
+    { label: "sqrt", insert: "sqrt(", tip: "제곱근" },
+    { label: "min", insert: "min(", tip: "최솟값: min(a, b)" },
+    { label: "max", insert: "max(", tip: "최댓값: max(a, b)" },
+  ] },
+];
+for (const g of FORMULA_PALETTE) for (const it of g.items) it.insert ??= it.label;
