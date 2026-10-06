@@ -11,7 +11,8 @@ from .config import BENCH_DIR, METRICS_PATH, ROOT
 STAGE_ORDER = ["news_section", "news_index", "crawl_news", "dart_list", "dart_docs", "process_clean",
                "process_dedup", "process_write_docs", "process_chunk", "process_merge_chunks", "embed",
                "load_pgvector", "load_qdrant", "load_opensearch"]
-RESUMABLE = {"news_section", "news_index", "crawl_news", "dart_list", "dart_docs", "embed", "process_chunk"}
+# process_chunk는 입력이 바뀌면 처음부터 다시 만들므로 합산하지 않는다(마지막 실행 기준)
+RESUMABLE = {"news_section", "news_index", "crawl_news", "dart_list", "dart_docs", "embed"}
 
 
 def fmt_s(sec):
@@ -72,16 +73,18 @@ def main():
     if bp.exists():
         b = json.loads(bp.read_text(encoding="utf-8"))
         out += ["", "## 3. 검색 성능 비교", "",
-                f"청크 {b['chunks']:,}개 · 질의 {b['queries']}개 · top-{b['k']} · 측정 시작 시 호스트 CPU "
-                f"{b['host_cpu_percent_at_start']}%", "",
-                "| 저장소 | ef | p50 ms | p95 ms | p99 ms | recall@10 | 필터 p50 | 필터 p95 | 필터 recall | QPS(스레드별) |",
-                "|---|---:|---:|---:|---:|---:|---:|---:|---:|---|"]
+                f"청크 {b['chunks']:,}개 · 질의 {b['queries']}개 · top-{b['k']} · 저장소를 하나씩만 띄워 측정", "",
+                "recall@10은 정확한 전수 탐색 대비 정답 일치율, 점수 기준은 실제 유사도가 정답 10위 이상이면 정답으로 친 값.", "",
+                "| 저장소 | ef | p50 ms | p95 ms | p99 ms | recall@10 | recall(점수) | 필터 p50 | 필터 p95 | 필터 recall | QPS 1/8/16 | 측정 중 CPU |",
+                "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|"]
         for name, r in b["stores"].items():
+            cpu = (r.get("host_cpu_percent") or {}).get("mean")
             for ef, row in r["by_ef"].items():
                 u, f = row["unfiltered"], row["filtered"]
-                qps = " / ".join(f"{t}:{v:,.0f}" for t, v in row["qps"].items())
+                qps = " / ".join(f"{v:,.0f}" for v in row["qps"].values())
                 out.append(f"| {name} | {ef} | {u['p50']} | {u['p95']} | {u['p99']} | {u['recall@10']:.3f} | "
-                           f"{f['p50']} | {f['p95']} | {f['recall@10']:.3f} | {qps} |")
+                           f"{u.get('recall@10_score', float('nan')):.3f} | {f['p50']} | {f['p95']} | "
+                           f"{f['recall@10']:.3f} | {qps} | {cpu if cpu is not None else '-'}% |")
     (ROOT / "REPORT.md").write_text("\n".join(out) + "\n", encoding="utf-8")
     print(f"저장: {ROOT / 'REPORT.md'}")
 

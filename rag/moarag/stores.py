@@ -125,6 +125,7 @@ class PgVector:
         return self.con.execute("SELECT count(*) FROM chunk").fetchone()[0]
 
     def set_ef(self, ef):
+        self.ef = int(ef)
         self.con.execute(f"SET hnsw.ef_search = {int(ef)}")
         # 필터로 후보가 모자라면 인덱스를 더 훑는다 (pgvector 0.8 iterative scan)
         self.con.execute("SET hnsw.iterative_scan = strict_order")
@@ -139,8 +140,10 @@ class PgVector:
         return [str(r[0]) for r in self.con.execute(sql, args).fetchall()]
 
     def clone(self):
-        c = PgVector.__new__(PgVector)
-        PgVector.__init__(c)
+        # 동시성 측정용 새 연결 - 세션 설정(ef_search)도 같이 옮겨야 같은 조건이 된다
+        c = PgVector()
+        if getattr(self, "ef", None):
+            c.set_ef(self.ef)
         return c
 
 

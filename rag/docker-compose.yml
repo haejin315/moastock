@@ -20,8 +20,8 @@ services:
       postgres
       -c shared_buffers=3GB
       -c effective_cache_size=9GB
-      -c maintenance_work_mem=4GB
-      -c max_parallel_maintenance_workers=3
+      -c maintenance_work_mem=2GB
+      -c max_parallel_maintenance_workers=4
       -c max_parallel_workers_per_gather=2
       -c max_worker_processes=8
       -c work_mem=64MB
