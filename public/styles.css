@@ -180,6 +180,8 @@ button.chip, span.chip {
 .chip.preset { color: var(--muted); }
 .chip.on { border-color: var(--accent); color: var(--text); }
 .chip-del { background: none; border: 0; color: var(--muted); cursor: pointer; font-size: 11px; padding: 0; }
+.col-del { background: none; border: 0; color: var(--muted); cursor: pointer; font-size: 10px; padding: 0 0 0 4px; opacity: 0.6; }
+.col-del:hover { color: var(--up); opacity: 1; }
 #formula-name { width: 110px; background: var(--input-bg); color: var(--text);
   border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; font-size: 13px; }
 #column-presets button { margin-right: 8px; }

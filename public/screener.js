@@ -135,6 +135,19 @@ function toggleFormula(src, name) {
   } else {
     activateFormula(src, name);
   }
+  formulasChanged();
+}
+
+// 컬럼 헤더/칩의 ✕: 해당 수식 컬럼 하나만 끈다 (저장된 수식 목록은 그대로)
+function removeFormulaColumn(id) {
+  const idx = state.formulas.findIndex((f) => f.id === id);
+  if (idx < 0) return;
+  removeSort(formulaKey(state.formulas[idx]));
+  state.formulas.splice(idx, 1);
+  formulasChanged();
+}
+
+function formulasChanged() {
   saveJson("moastock.activeFormulas", state.formulas.map((f) => ({ name: f.name, src: f.src })));
   renderFormulaChips();
   render();
@@ -223,6 +236,14 @@ function renderFormulaChips() {
     chips.push(`<span class="chip user ${isActiveSrc(f.src) ? "on" : ""}" title="${esc(f.src)}">
       <button class="chip-apply" data-src="${esc(f.src)}" data-name="${esc(f.name)}">${esc(f.name)}</button>
       <button class="chip-del" data-del="${i}" title="저장 삭제">✕</button></span>`);
+  }
+  // 저장하지 않고 '적용'만 한 수식도 칩으로 보여야 개별로 끌 수 있다
+  const listed = new Set([...PRESET_FORMULAS, ...state.savedFormulas].map((f) => f.src));
+  for (const f of state.formulas) {
+    if (listed.has(f.src)) continue;
+    chips.push(`<span class="chip user on" title="${esc(f.src)}">
+      <span class="chip-apply">${esc(f.name)}</span>
+      <button class="chip-del" data-off="${f.id}" title="열 삭제">✕</button></span>`);
   }
   $("#formula-chips").innerHTML = chips.join("");
 }
@@ -401,7 +422,8 @@ function renderHead() {
   }
   for (const f of state.formulas) {
     cells.push(`<th class="num formula-head" style="width:${FIXED_W.formula}px"
-      data-k="${formulaKey(f)}" title="${esc(f.src)} — 클릭하면 이 수식으로 정렬">${esc(f.name)}</th>`);
+      data-k="${formulaKey(f)}" title="${esc(f.src)} — 클릭하면 이 수식으로 정렬">${esc(f.name)}<button
+      class="col-del" data-off="${f.id}" title="열 삭제" aria-label="${esc(f.name)} 열 삭제">✕</button></th>`);
     total += FIXED_W.formula;
   }
   $("#head-row").innerHTML = cells.join("");
@@ -562,6 +584,8 @@ $("#formula-save").addEventListener("click", () => {
 });
 
 $("#formula-chips").addEventListener("click", (e) => {
+  const off = e.target.closest("[data-off]");
+  if (off) { removeFormulaColumn(Number(off.dataset.off)); return; }
   const del = e.target.closest("[data-del]");
   if (del) {
     const removed = state.savedFormulas.splice(Number(del.dataset.del), 1)[0];
@@ -575,6 +599,8 @@ $("#formula-chips").addEventListener("click", (e) => {
 });
 
 document.querySelector("thead").addEventListener("click", (e) => {
+  const off = e.target.closest("[data-off]");
+  if (off) { removeFormulaColumn(Number(off.dataset.off)); return; }   // ✕는 정렬로 번지지 않게
   const th = e.target.closest("th[data-k]");
   if (!th) return;
   pickSort(th.dataset.k);
@@ -647,6 +673,18 @@ $("#screener-table").addEventListener("click", (e) => {
   const tr = e.target.closest("tr.rowlink");
   if (tr) location.href = `/stock.html?code=${tr.dataset.code}`;
 });
+
+// 드롭다운(업종/컬럼): 바깥 클릭이나 Esc로 닫고, 하나를 열면 다른 하나는 닫는다
+const pickers = document.querySelectorAll("details.industry-picker");
+const closePickers = (except = null) =>
+  pickers.forEach((d) => { if (d !== except) d.open = false; });
+document.addEventListener("pointerdown", (e) => {
+  closePickers(e.target.closest("details.industry-picker"));
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closePickers();
+});
+pickers.forEach((d) => d.addEventListener("toggle", () => { if (d.open) closePickers(d); }));
 
 $("#prev").addEventListener("click", () => { state.page--; render(); });
 $("#next").addEventListener("click", () => { state.page++; render(); });
