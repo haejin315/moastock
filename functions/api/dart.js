@@ -34,9 +34,15 @@ export async function onRequestGet(context) {
       page_no: String(page),
       page_count: "40",
     });
-    const body = await (
-      await fetchUpstream(`https://opendart.fss.or.kr/api/list.json?${qs}`)
-    ).json();
+    let body;
+    try {
+      body = await (
+        await fetchUpstream(`https://opendart.fss.or.kr/api/list.json?${qs}`)
+      ).json();
+    } catch (err) {
+      // 원본 장애를 불투명한 500 대신 원인과 함께 502로 알린다 (키는 메시지에 넣지 않음)
+      return bad(`DART 원본 호출 실패: ${String(err && err.message || err)}`, 502);
+    }
     if (body.status !== "000" && body.status !== "013") {
       return bad(`DART 오류 ${body.status}: ${body.message}`, 502);
     }
