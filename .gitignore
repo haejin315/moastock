@@ -7,3 +7,5 @@ rag/.env
 rag/**/__pycache__/
 .wrangler-home/
 chat/.wrangler/
+assistant/eval/results/
+assistant/__pycache__/

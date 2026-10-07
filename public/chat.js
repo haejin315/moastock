@@ -31,6 +31,7 @@ function h(tag, attrs = {}, ...kids) {
     if (v === undefined || v === null || v === false) continue;
     if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
     else if (k === "text") el.textContent = v;
+    else if (k === "class") el.className = [el.className, v].filter(Boolean).join(" ");   // 태그의 클래스와 합친다
     else el.setAttribute(k, v === true ? "" : v);
   }
   for (const c of kids.flat()) if (c !== null && c !== undefined && c !== false) el.append(c instanceof Node ? c : String(c));
@@ -187,7 +188,7 @@ function render() {
                   class: state.tab === "ai" ? "on" : "", onclick: () => { state.tab = "ai"; render(); } }, "AI 비서"),
     h("button.chat-close", { type: "button", "aria-label": "채팅 닫기", onclick: () => setOpen(false) }, "✕"));
   let body;
-  if (state.tab === "ai") body = viewAi();
+  if (state.tab === "ai") body = viewAi();      // AI 비서는 닉네임 없이 쓴다
   else if (!LS.get(NICK_KEY) || state.view === "nick") body = viewNick();
   else body = { list: viewList, create: viewCreate, room: viewRoom, settings: viewSettings, password: viewPassword }[state.view]();
   panel.replaceChildren(tabs, body, h("div.chat-toast", { hidden: true }));
@@ -198,11 +199,143 @@ function render() {
   }
 }
 
+// ---- AI 비서 탭 -----------------------------------------------------------------
+// /api/assistant 로 질문을 보내고 SSE(status·plan·evidence·token·done) 스트림을 받아 그린다.
+const ai = { messages: [], busy: false, remaining: null, limit: null, available: null };
+
+const EXAMPLES = ["삼성전자 최근 공시 정리해줘", "최근 반도체 업종 주요 뉴스 요약해줘", "SK하이닉스 3분기 실적 관련 소식 알려줘"];
+
+async function loadAiQuota() {
+  try {
+    const r = await fetch("/api/assistant");
+    const b = await r.json();
+    Object.assign(ai, { remaining: b.remaining, limit: b.limit, available: b.available });
+  } catch { ai.available = false; }
+  if (state.open && state.tab === "ai") render();
+}
+
+// 모델이 "2026 년 8 월"처럼 숫자와 단위를 띄우는 버릇을 화면에서만 붙여 준다
+const tidy = (s) => s.replace(/(\d) (?=(년|월|일|분기|원|억|조|만|천|%|배|주|건|명))/g, "$1");
+
+/** 답변 글자를 그리되 [n] 은 출처 링크로 (사용자·모델 글자는 전부 텍스트 노드) */
+function answerNodes(text, sources) {
+  const out = [];
+  const parts = tidy(text).split(/(\[\d+\])/);
+  for (const p of parts) {
+    const m = /^\[(\d+)\]$/.exec(p);
+    const src = m && sources?.find((s) => s.n === Number(m[1]));
+    if (src) out.push(h("a.ai-cite", { href: src.url, target: "_blank", rel: "noopener", title: src.title }, `[${m[1]}]`));
+    else if (p) out.push(p);
+  }
+  return out;
+}
+
+function aiMsgNode(m) {
+  if (m.role === "user") return h("div.chat-msg.mine", h("div.chat-bubble-row", h("div.chat-bubble", {}, m.text)));
+  const kids = [];
+  if (m.status && !m.done) kids.push(h("div.ai-status", {}, "⏳ ", m.status));
+  if (m.text) kids.push(h("div.ai-answer", {}, answerNodes(m.text, m.sources)));
+  if (m.error) kids.push(h("div.chat-err", {}, m.error));
+  if (m.done && m.sources?.length) {
+    kids.push(h("details.ai-sources", {},
+      h("summary", {}, `출처 ${m.sources.length}건`),
+      h("ol", {}, m.sources.map((s) => h("li", { value: s.n },
+        h("a", { href: s.url, target: "_blank", rel: "noopener" }, s.title),
+        h("span.muted", {}, ` · ${s.type === "dart" ? "공시" : s.publisher || "뉴스"} · ${s.published_at || ""}`),
+        s.original_url ? h("a.ai-orig", { href: s.original_url, target: "_blank", rel: "noopener" }, " 원문") : null)))));
+  }
+  if (m.done && m.checks && m.checks.numbers !== undefined) {
+    const c = m.checks;
+    const bad = (c.unsupported_numbers || []).length;
+    const approx = c.numbers_approx || 0;
+    const msg = !c.numbers
+      ? (c.has_citation ? "✓ 근거 인용 있음" : "⚠ 인용 없는 답변 - 원문을 확인하세요")
+      : bad
+        ? `⚠ 숫자 ${c.numbers}개 중 ${bad}개는 근거와 다릅니다(${c.unsupported_numbers.join(", ")}) - 원문을 확인하세요`
+        : `✓ 답변의 숫자 ${c.numbers}개 모두 근거에서 확인${approx ? ` (그중 ${approx}개는 반올림한 근사값)` : ""}`;
+    kids.push(h("div.ai-check", { class: bad || (!c.numbers && !c.has_citation) ? "warn" : "ok" }, msg));
+  }
+  if (m.done && m.notes?.length) kids.push(h("div.chat-hint", {}, m.notes.join(" · ")));
+  if (m.done && m.disclaimer) kids.push(h("div.ai-disclaimer", {}, m.disclaimer));
+  return h("div.chat-msg.ai", h("span.chat-nick", {}, "AI 비서"), h("div.ai-bubble", {}, kids));
+}
+
+function paintAi() {
+  const box = panel.querySelector(".ai-msgs");
+  if (!box) return;
+  const nearEnd = box.scrollHeight - box.scrollTop - box.clientHeight < 120;
+  box.replaceChildren(...ai.messages.map(aiMsgNode));
+  if (nearEnd) box.scrollTop = box.scrollHeight;
+  const q = panel.querySelector(".ai-quota");
+  if (q) q.textContent = ai.remaining === null ? "" : `오늘 남은 질문 ${ai.remaining}/${ai.limit}`;
+  const send = panel.querySelector(".ai-send");
+  if (send) send.disabled = ai.busy || ai.remaining === 0;
+}
+
+async function askAi(question) {
+  if (ai.busy || !question.trim()) return;
+  ai.busy = true;
+  ai.messages.push({ role: "user", text: question });
+  const m = { role: "ai", text: "", status: "질문을 보내는 중", sources: [], done: false };
+  ai.messages.push(m);
+  paintAi();
+  try {
+    const r = await fetch("/api/assistant", { method: "POST", headers: { "Content-Type": "application/json" },
+                                              body: JSON.stringify({ question }) });
+    if (!r.ok || !r.body) {
+      const b = await r.json().catch(() => ({}));
+      throw new Error(b.error || `요청 실패 (${r.status})`);
+    }
+    if (ai.remaining) ai.remaining--;
+    const reader = r.body.pipeThrough(new TextDecoderStream()).getReader();
+    let buf = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += value;
+      let i;
+      while ((i = buf.indexOf("\n\n")) >= 0) {
+        const block = buf.slice(0, i); buf = buf.slice(i + 2);
+        const ev = /^event: (.+)$/m.exec(block)?.[1];
+        const data = JSON.parse(/^data: (.*)$/m.exec(block)?.[1] || "{}");
+        if (ev === "status") m.status = data.text;
+        else if (ev === "plan" && data.stocks?.length) m.status = `${data.stocks.join(", ")} 관련 자료를 찾는 중`;
+        else if (ev === "evidence") m.sources = data.items;
+        else if (ev === "token") { m.text += data.text; m.status = null; }
+        else if (ev === "done") Object.assign(m, { checks: data.checks, notes: data.notes, disclaimer: data.disclaimer, sources: data.sources });
+        else if (ev === "error") m.error = data.message;
+        paintAi();
+      }
+    }
+  } catch (e) {
+    m.error = e.message;
+  } finally {
+    m.done = true; m.status = null; ai.busy = false;
+    paintAi();
+  }
+}
+
 function viewAi() {
-  return h("div.chat-body.chat-ai",
-    h("div.chat-empty",
+  if (ai.available === null) loadAiQuota();
+  if (ai.available === false) {
+    return h("div.chat-body.chat-ai", h("div.chat-empty",
       h("b", {}, "AI 비서는 준비 중입니다"),
       h("p", {}, "뉴스·공시 원문을 근거로 종목 질문에 답하고, 답마다 출처를 함께 보여주는 비서를 만들고 있습니다.")));
+  }
+  const ta = h("textarea", { rows: 1, maxlength: 500, placeholder: "종목·공시·뉴스에 대해 물어보세요 (Enter 전송)", "aria-label": "AI 비서에게 질문" });
+  const sendNow = () => { const q = ta.value; ta.value = ""; askAi(q); };
+  ta.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendNow(); } });
+  const intro = ai.messages.length ? null : h("div.ai-intro",
+    h("p", {}, "수집된 뉴스·공시 원문을 근거로 답하고, 문장마다 출처 번호를 붙입니다. 매수·매도 추천은 하지 않습니다."),
+    h("div.ai-examples", {}, EXAMPLES.map((q) => h("button.chip", { type: "button", onclick: () => askAi(q) }, q))));
+  const wrap = h("div.chat-body.chat-roomview.chat-ai",
+    h("div.chat-roomhead", h("div.chat-roominfo", h("b", {}, "AI 비서"), h("span.chat-roommeta.ai-quota"))),
+    intro,
+    h("div.chat-msgs.ai-msgs", { role: "log", "aria-live": "polite" }),
+    h("form.chat-input", { onsubmit: (e) => { e.preventDefault(); sendNow(); } },
+      ta, h("button.chat-primary.small.ai-send", { type: "submit" }, "질문")));
+  queueMicrotask(paintAi);
+  return wrap;
 }
 
 function viewNick() {

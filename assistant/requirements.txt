@@ -1,0 +1,11 @@
+langgraph>=1.2
+fastapi
+uvicorn[standard]
+openai>=1.40
+psycopg[binary]>=3.2
+pgvector
+numpy
+onnxruntime
+transformers
+huggingface-hub
+pyahocorasick

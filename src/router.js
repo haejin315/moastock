@@ -1,6 +1,7 @@
 // /api/* 라우터 (Durable Object 클래스와 분리 - Node 테스트에서 바로 불러올 수 있게)
 // API 모듈은 Pages Functions 시절과 같은 모양(onRequestGet 등, context = {request, env, params, waitUntil})을
 // 유지해 그대로 재사용한다.
+import * as assistant from "./api/assistant.js";
 import * as board from "./api/board.js";
 import * as chart from "./api/chart.js";
 import * as chat from "./api/chat.js";
@@ -12,7 +13,7 @@ import * as stockfeed from "./api/stockfeed.js";
 import { json } from "./api/_utils.js";
 
 // /api/<이름> → 모듈 (chat 만 하위 경로를 받는다)
-const API = { board, chart, dart, news, quote, screener, stockfeed };
+const API = { assistant, board, chart, dart, news, quote, screener, stockfeed };
 
 function handlerFor(mod, method) {
   const m = method === "HEAD" ? "GET" : method;

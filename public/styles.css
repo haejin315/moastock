@@ -456,3 +456,22 @@ table.screener td.c-mhead { display: none; }
   .chat-panel { inset: 0; width: auto; height: auto; border-radius: 0; border: 0; }
   html.chat-open body { overflow: hidden; }
 }
+
+/* ---- AI 비서 ---- */
+.chat-msg.ai { max-width: 100%; }
+.ai-bubble { background: var(--input-bg); border: 1px solid var(--line); border-radius: 14px 14px 14px 4px; padding: 9px 12px; display: flex; flex-direction: column; gap: 6px; }
+.ai-answer { white-space: pre-wrap; word-break: break-word; line-height: 1.6; }
+.ai-cite { color: var(--accent); font-size: 0.8em; vertical-align: super; text-decoration: none; margin: 0 1px; }
+.ai-status { color: var(--muted); font-size: 13px; }
+.ai-sources summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+.ai-sources ol { margin: 6px 0 0; padding-left: 20px; font-size: 12px; display: flex; flex-direction: column; gap: 3px; }
+.ai-sources a { color: var(--text); }
+.ai-orig { color: var(--accent) !important; }
+.ai-check { font-size: 12px; }
+.ai-check.ok { color: var(--accent); }
+.ai-check.warn { color: #fbbf24; }
+.ai-disclaimer { font-size: 11px; color: var(--muted); border-top: 1px solid var(--line); padding-top: 6px; }
+.ai-intro { padding: 10px 12px; color: var(--muted); font-size: 13px; }
+.ai-intro p { margin: 0 0 8px; }
+.ai-examples { display: flex; flex-wrap: wrap; gap: 6px; }
+.ai-examples .chip { font-size: 12px; text-align: left; }
