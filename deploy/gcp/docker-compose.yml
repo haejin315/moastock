@@ -7,6 +7,7 @@
 #   assistant  LangGraph 오케스트레이터 (FastAPI, SSE)       :8100
 #   tunnel     cloudflared (TUNNEL_TOKEN 이 있을 때)
 #
+# VM: n1-highmem-2 (2코어, 13GB) + T4 1장, 스팟. 매일 15~22시만 켠다 (인스턴스 일정 moastock-ai-hours)
 # GPU 메모리(T4 16GB): vLLM 0.80(모델 ~8.7GB + 문맥 캐시) + TEI ~1GB
 x-gpu: &gpu
   deploy:
@@ -50,8 +51,8 @@ services:
     volumes: [/data/pg:/var/lib/postgresql, /data/dump:/dump]
     ports: ["127.0.0.1:5432:5432"]
     command: >
-      postgres -c shared_buffers=6GB -c effective_cache_size=16GB
-      -c maintenance_work_mem=4GB -c max_parallel_maintenance_workers=3
+      postgres -c shared_buffers=3GB -c effective_cache_size=8GB
+      -c maintenance_work_mem=1GB -c max_parallel_maintenance_workers=1
       -c work_mem=64MB -c max_wal_size=8GB
 
   assistant:
