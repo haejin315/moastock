@@ -26,8 +26,8 @@ def encoder():
     global _encoder
     with _lock:
         if _encoder is None:
-            from moarag.embed import OrtEncoder
-            _encoder = OrtEncoder(threads=4)
+            from moarag.embed import make_encoder     # MOARAG_EMBED_URL 이 있으면 GPU 임베딩 서버
+            _encoder = make_encoder(threads=4)
     return _encoder
 
 

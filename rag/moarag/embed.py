@@ -63,6 +63,31 @@ class OrtEncoder:
         return out
 
 
+class HttpEncoder:
+    """GPU 서버의 임베딩 서빙(text-embeddings-inference)을 부른다. OrtEncoder와 같은 벡터(평균 풀링 + L2 정규화)."""
+
+    def __init__(self, url: str, timeout: float = 120):
+        import requests
+        self.url = url.rstrip("/") + "/embed"
+        self.http = requests.Session()
+        self.timeout = timeout
+
+    def encode(self, texts, batch: int = 64):
+        out = np.zeros((len(texts), EMBED_DIM), np.float32)
+        for i in range(0, len(texts), batch):
+            r = self.http.post(self.url, json={"inputs": texts[i:i + batch], "truncate": True, "normalize": True},
+                               timeout=self.timeout)
+            r.raise_for_status()
+            out[i:i + batch] = np.asarray(r.json(), dtype=np.float32)
+        return out
+
+
+def make_encoder(threads: int = 8):
+    """MOARAG_EMBED_URL 이 있으면 임베딩 서버, 없으면 로컬 CPU(onnxruntime)."""
+    url = os.environ.get("MOARAG_EMBED_URL")
+    return HttpEncoder(url) if url else OrtEncoder(threads=threads)
+
+
 def passage_texts(tbl):
     titles = tbl.column("title").to_pylist()
     texts = tbl.column("text").to_pylist()

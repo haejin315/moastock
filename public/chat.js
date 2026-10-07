@@ -201,15 +201,17 @@ function render() {
 
 // ---- AI 비서 탭 -----------------------------------------------------------------
 // /api/assistant 로 질문을 보내고 SSE(status·plan·evidence·token·done) 스트림을 받아 그린다.
-const ai = { messages: [], busy: false, remaining: null, limit: null, available: null };
+const ai = { messages: [], busy: false, remaining: null, limit: null, available: null, open: true, hours: null, checkedAt: 0 };
 
 const EXAMPLES = ["삼성전자 최근 공시 정리해줘", "최근 반도체 업종 주요 뉴스 요약해줘", "SK하이닉스 3분기 실적 관련 소식 알려줘"];
 
 async function loadAiQuota() {
+  ai.checkedAt = Date.now();          // 응답을 기다리는 동안 다시 그려도 중복 요청하지 않게
   try {
     const r = await fetch("/api/assistant");
     const b = await r.json();
-    Object.assign(ai, { remaining: b.remaining, limit: b.limit, available: b.available });
+    Object.assign(ai, { remaining: b.remaining, limit: b.limit, available: b.available,
+                        open: b.open !== false, hours: b.hours || null });
   } catch { ai.available = false; }
   if (state.open && state.tab === "ai") render();
 }
@@ -316,7 +318,13 @@ async function askAi(question) {
 }
 
 function viewAi() {
-  if (ai.available === null) loadAiQuota();
+  // 운영 시간이 바뀌었을 수 있으니 탭을 열 때 1분마다 다시 확인
+  if (ai.available === null || (!ai.busy && Date.now() - ai.checkedAt > 60e3)) loadAiQuota();
+  if (ai.available && !ai.open && !ai.messages.length) {
+    return h("div.chat-body.chat-ai", h("div.chat-empty",
+      h("b", {}, "지금은 AI 비서 운영 시간이 아닙니다"),
+      h("p", {}, `AI 비서는 매일 ${ai.hours} (한국 시간)에 운영합니다. 운영 시간에 다시 찾아 주세요.`)));
+  }
   if (ai.available === false) {
     return h("div.chat-body.chat-ai", h("div.chat-empty",
       h("b", {}, "AI 비서는 준비 중입니다"),

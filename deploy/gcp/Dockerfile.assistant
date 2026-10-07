@@ -1,0 +1,12 @@
+# LangGraph 오케스트레이터. 저장소 구조(assistant/, rag/moarag, public/data/snapshot.json)를 그대로 둔다 -
+# config.py 가 저장소 루트를 기준으로 moarag 와 종목 스냅샷을 찾기 때문.
+FROM python:3.12-slim
+WORKDIR /app
+COPY assistant/requirements.txt assistant/requirements.txt
+RUN pip install --no-cache-dir -r assistant/requirements.txt requests pyarrow
+COPY assistant/ assistant/
+COPY rag/moarag/ rag/moarag/
+COPY public/data/snapshot.json public/data/snapshot.json
+WORKDIR /app/assistant
+ENV PYTHONUNBUFFERED=1
+CMD ["python", "-m", "uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8100", "--workers", "1"]

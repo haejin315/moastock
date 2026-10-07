@@ -1,0 +1,6 @@
+*
+!assistant/
+!rag/moarag/
+!public/data/snapshot.json
+**/__pycache__
+assistant/eval/results/

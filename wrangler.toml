@@ -41,3 +41,11 @@ new_sqlite_classes = ["Lobby", "ChatRoom"]
 
 # 비밀값: DART_API_KEY  →  npx wrangler secret put DART_API_KEY
 # 로컬 개발은 .dev.vars 에서 읽는다
+
+# AI 비서 GPU 서버(GCP) - Cloudflare 터널을 통한 비공개 연결 (공개 주소 없음)
+[[vpc_services]]
+binding = "ASSIST_VPC"
+service_id = "01a11537-664d-73c3-89b7-73a1eda8c604"
+
+[vars]
+ASSIST_HOURS = "15-22"   # AI 비서 운영 시간 (KST, 시작-끝). GCP 서버도 이 시간에 맞춰 자동으로 켜지고 꺼진다
