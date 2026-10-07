@@ -19,7 +19,13 @@ from .config import (COLLECTION, EMBED_DIM, HNSW_EF_CONSTRUCTION, HNSW_M, OPENSE
 META_COLS = ["chunk_id", "doc_id", "chunk_index", "n_chunks", "text", "char_start", "char_end", "n_tokens",
              "source_type", "title", "publisher", "author", "published_at", "url", "original_url",
              "stock_codes", "stock_names", "stock_match", "corp_name", "report_nm", "rcept_no", "section",
-             "n_dup_sources", "crawled_at"]
+             "n_dup_sources", "crawled_at", "kind"]
+
+
+def meta_cols(pf) -> list[str]:
+    """parquet 에 있는 메타 열만 (예전 청크 파일에는 kind 가 없다)"""
+    names = set(pf.schema_arrow.names)
+    return [c for c in META_COLS if c in names]
 
 
 def _ts(s):
@@ -72,7 +78,8 @@ class PgVector:
           source_type   text NOT NULL,
           published_at  timestamptz,
           stock_codes   text[] NOT NULL DEFAULT '{}',
-          embedding     vector(%d) NOT NULL
+          embedding     vector(%d) NOT NULL,
+          kind          text NOT NULL DEFAULT 'text'   -- text(문단) | table(공시 표)
         );
         """ % EMBED_DIM)
 
@@ -91,13 +98,13 @@ class PgVector:
     def load(self, rows, vecs):
         with self.con.cursor().copy(
                 "COPY chunk (chunk_id,doc_id,chunk_index,char_start,char_end,n_tokens,content,source_type,"
-                "published_at,stock_codes,embedding) FROM STDIN WITH (FORMAT BINARY)") as cp:
+                "published_at,stock_codes,embedding,kind) FROM STDIN WITH (FORMAT BINARY)") as cp:
             cp.set_types(["uuid", "text", "int4", "int4", "int4", "int4", "text", "text", "timestamptz",
-                          "text[]", "vector"])
+                          "text[]", "vector", "text"])
             for r, v in zip(rows, vecs):
                 cp.write_row([uuid.UUID(r["chunk_id"]), r["doc_id"], r["chunk_index"], r["char_start"], r["char_end"],
                               r["n_tokens"], r["text"], r["source_type"], _ts(r["published_at"]),
-                              r["stock_codes"] or [], v])
+                              r["stock_codes"] or [], v, r.get("kind") or "text"])
 
     def finalize(self):
         t = {}

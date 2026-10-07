@@ -6,7 +6,8 @@
 - corp_code 없이 목록을 조회하면 검색 기간이 3개월로 제한되므로 1개월 단위로 끊어 조회한다.
 - OpenDART는 키당 하루 20,000건 제한이 있다. 상태코드 020(한도 초과)을 받으면 멈추고,
   다음 날 같은 명령을 다시 실행하면 status='pending'인 것부터 이어서 받는다.
-- 원문 XML(DART 자체 마크업)은 표를 "셀 | 셀" 행으로 펴서 텍스트로 저장한다.
+- 원문 XML(DART 자체 마크업)의 표는 ROWSPAN·COLSPAN을 펼쳐 '| 열: 머리글…' 다음 행마다 '| 행이름 — 값 · 값' 한 줄로 저장한다.
+  (원본 ZIP은 dart_zip 표에 보관 - 다시 받지 않고 재가공할 수 있게)
 """
 from __future__ import annotations
 
@@ -97,15 +98,124 @@ _CELL_END = re.compile(r"</(TD|TH|TE|TU)>", re.I)
 _BR = re.compile(r"<BR\s*/?>", re.I)
 
 
+_TABLE = re.compile(r"<TABLE\b[^>]*>(.*?)</TABLE>", re.I | re.S)
+_TR = re.compile(r"<TR\b[^>]*>(.*?)</TR>", re.I | re.S)
+_CELL = re.compile(r"<(TD|TH|TE|TU)\b([^>]*)>(.*?)</\1>", re.I | re.S)
+_SPAN = {k: re.compile(rf'\b{k}\s*=\s*"?(\d+)', re.I) for k in ("ROWSPAN", "COLSPAN")}
+_NUMERIC = re.compile(r"^[\s\d,.()%△▲\-+~/]*$")
+TABLE_ROW = "| "          # 표 행은 이 접두어로 시작한다 - 청킹에서 표를 문단과 따로 묶는 표시
+TABLE_HEAD = "| 열: "     # 표 머리글 행 (청크마다 다시 붙인다)
+
+
+def _cell_text(s: str) -> str:
+    return re.sub(r"\s+", " ", html.unescape(_TAG.sub(" ", _BR.sub(" ", s)))).strip()
+
+
+def _table_grid(tbl: str):
+    """TR/셀을 ROWSPAN·COLSPAN까지 펼친 격자. [(셀들, 머리글행 여부)]"""
+    grid, pending = [], {}            # pending[col] = (남은 행 수, 값) - 위에서 내려오는 ROWSPAN
+    for tr in _TR.findall(tbl):
+        row, col = [], 0
+        cells = _CELL.findall(tr)
+        is_head = bool(cells) and all(t.upper() == "TH" for t, _, _ in cells)
+        for tag, attrs, inner in cells:
+            while col in pending:                 # 위 행에서 내려온 칸 채우기
+                n, v = pending.pop(col)
+                row.append(v)
+                if n > 1:
+                    pending[col] = (n - 1, v)
+                col += 1
+            rs = int((_SPAN["ROWSPAN"].search(attrs) or [0, 1])[1])
+            cs = int((_SPAN["COLSPAN"].search(attrs) or [0, 1])[1])
+            v = _cell_text(inner)
+            for k in range(cs):
+                row.append(v if (k == 0 or is_head) else "")   # 가로 병합: 머리글은 이름 반복, 본문은 첫 칸만
+                if rs > 1:
+                    pending[col] = (rs - 1, v)
+                col += 1
+        while col in pending:
+            n, v = pending.pop(col)
+            row.append(v)
+            if n > 1:
+                pending[col] = (n - 1, v)
+            col += 1
+        if any(row):
+            grid.append((row, is_head))
+    return grid
+
+
+def table_to_lines(tbl: str) -> list[str]:
+    """표 → 한 줄씩. 머리글이 있으면 첫 줄 '| 열: 행이름열 — 열1 · 열2 …', 이어서 '| 행이름 — 값1 · 값2 …'
+    (빈 칸은 '-'로 자리를 지켜 열 순서가 맞게). 청킹에서 머리글 줄을 표 청크마다 다시 붙인다."""
+    grid = _table_grid(tbl)
+    head_rows = []
+    while grid and grid[0][1]:
+        head_rows.append(grid.pop(0)[0])
+    # 머리글 둘째 줄이 TD로 적힌 경우(예: 기수 아래 날짜): 숫자 칸이 없고 첫 칸이 위 머리글에서 내려온 행
+    while head_rows and len(grid) > 1:
+        row = grid[0][0]
+        if any(v and _NUMERIC.match(v) for v in row) or (row[0] and row[0] != head_rows[-1][0]):
+            break
+        head_rows.append(grid.pop(0)[0])
+    width = max([len(r) for r, _ in grid] + [len(r) for r in head_rows] + [0])
+    header = None
+    if head_rows:
+        header = []
+        for c in range(width):
+            parts = []
+            for r in head_rows:
+                v = r[c] if c < len(r) else ""
+                if v and v not in parts:
+                    parts.append(v)
+            header.append(" ".join(parts))
+    lines = []
+    if header:
+        # 앞쪽의 글자 칸(구분·항목명)은 행 이름 - 표 전체에서 글자만 있는 앞 열 수(최대 3)
+        n_label = 0
+        while n_label < min(3, width - 1) and all(
+                not (c := (r[n_label] if n_label < len(r) else "")) or not _NUMERIC.match(c) for r, _ in grid):
+            n_label += 1
+        names = [h for h in header[:n_label] if h]
+        lines.append(TABLE_HEAD + (" / ".join(dict.fromkeys(names)) + " — " if names else "")
+                     + " · ".join(h or "-" for h in header[n_label:]))
+        for row, _ in grid:
+            row = row + [""] * (width - len(row))
+            vals = row[n_label:]
+            if all(v in ("", "-", "–", "0") for v in vals):     # 값이 하나도 없는 행(해당 없음)은 버린다
+                continue
+            label = " / ".join(dict.fromkeys(v for v in row[:n_label] if v))
+            lines.append(TABLE_ROW + (label + " — " if label else "") + " · ".join(v or "-" for v in vals))
+    else:
+        for row, _ in grid:
+            cells = list(row)
+            while cells and not cells[-1]:
+                cells.pop()
+            if any(cells):
+                lines.append(TABLE_ROW + " | ".join(cells))
+    return lines
+
+
 def dart_xml_to_text(xml: str) -> str:
-    """DART 마크업 → 평문. 표는 행 단위로 '셀 | 셀'."""
+    """DART 마크업 → 평문. 표는 '| '로 시작하는 줄들(ROWSPAN·COLSPAN 펼침, 첫 줄은 '| 열: ' 머리글)."""
     xml = re.sub(r"<(STYLE|SCRIPT)[\s\S]*?</\1>", "", xml, flags=re.I)
+    xml = re.sub(r"\s+", " ", xml)          # 원본의 줄바꿈·들여쓰기는 의미가 없다 - 구조는 태그로만 판단
+    tables: list[list[str]] = []
+
+    def hold(m):                            # 표는 따로 펴 두고 자리표시만 남긴다 (아래 태그 제거에 다치지 않게)
+        tables.append(table_to_lines(m.group(1)))
+        return f"\n\x00T{len(tables) - 1}\x00\n"
+
+    xml = _TABLE.sub(hold, xml)
     xml = _CELL_END.sub(" | ", xml)
     xml = _BLOCK_END.sub("\n", xml)
     xml = _BR.sub("\n", xml)
     text = html.unescape(_TAG.sub("", xml))
     lines = []
     for ln in text.splitlines():
+        m = re.fullmatch(r"\s*\x00T(\d+)\x00\s*", ln)
+        if m:
+            lines.extend(tables[int(m.group(1))])
+            continue
         ln = re.sub(r"[ \t ]+", " ", ln).strip(" |")
         if ln:
             lines.append(ln)

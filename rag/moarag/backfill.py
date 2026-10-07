@@ -17,7 +17,7 @@ import pyarrow.parquet as pq
 from .config import CHUNKS_PATH, DOCS_PATH
 from .embed import DONE_PATH, load_done_mask, make_encoder, passage_texts
 from .metrics import Progress, Stage
-from .stores import META_COLS, PgVector
+from .stores import PgVector, meta_cols
 
 
 def main(block: int, batch: int, rebuild_index: bool):
@@ -50,7 +50,7 @@ def main(block: int, batch: int, rebuild_index: bool):
     with Stage("backfill", chunks=todo, batch=batch, rebuild_index=rebuild_index) as st:
         prog = Progress("덧붙이기", total=todo, every=60)
         off = 0
-        for rb in pf.iter_batches(batch_size=block, columns=META_COLS):
+        for rb in pf.iter_batches(batch_size=block, columns=meta_cols(pf)):
             k = rb.num_rows
             idx = np.nonzero(~done[off:off + k])[0]
             if len(idx):

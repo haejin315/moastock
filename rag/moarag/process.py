@@ -42,7 +42,7 @@ from .stockmatch import StockMatcher
 # 종목 매핑 신뢰도 순서 (같은 종목이 여러 방식으로 잡히면 앞의 것을 기록)
 MATCH_RANK = {"naver_tag": 0, "code": 1, "title": 2, "body": 3}
 
-PIPELINE_VERSION = "2026-10-01.1"
+PIPELINE_VERSION = "2026-10-08.1"   # 공시 표를 행 단위로 펴고 표 청크를 따로 둠
 NS = uuid.UUID("6f1c2a5e-8f0b-4c55-9d7a-0c3c2b7f4e11")
 
 # ---- 정제 ---------------------------------------------------------------------
@@ -167,9 +167,127 @@ def chunk_doc(text: str):
     return chunks
 
 
+TABLE_ROW = "| "                     # collect_dart 가 표 행 앞에 붙이는 표시
+TABLE_HEAD = "| 열: "                # 표 머리글 줄
+CAPTION_LINE_MAX = 80                 # 표 바로 앞의 짧은 줄(예: '가. 요약재무정보')만 표 제목으로 쓴다
+HEAD_TOKENS_MAX = 120                 # 표 청크 머리(제목 + 열 이름) 최대 토큰
+# 정기보고서에서 표는 청크로 만들지 않는 구간 (문단은 남긴다): 재무제표 주석·상세표는 표 분량의 절반에 가깝지만
+# 일반 투자자 질문에는 거의 쓰이지 않고, 작은 모델이 비슷한 숫자 표를 헷갈리게 만든다.
+TABLE_SKIP_START = re.compile(r"^(XII\. 상세표|\d+\. (연결)?재무제표 주석)")
+TABLE_SKIP_END = re.compile(r"^((I|II|III|IV|V|VI|VII|VIII|IX|X|XI|XII)\. |\d+\. (재무제표|배당에 관한 사항|증권의 발행|기타 재무에 관한 사항))")
+
+
+def chunk_dart(text: str):
+    """공시: 문단과 표를 따로 청킹한다 → [(char_start, char_end, n_tokens, kind, 청크 글)].
+
+    - 문단(text): 표 행을 뺀 글만 이어 붙여 기존 방식(문장 단위 + 겹침)으로 묶는다.
+    - 표(table): 표마다 따로, 행 단위로 묶는다(행은 '행이름 — 열: 값' 형태라 혼자서도 뜻이 선다).
+      청크마다 앞에 '[표] 표 제목 / (단위 : …)'와 '열: …' 머리글을 붙여, 표 중간에서 잘린 청크도
+      무슨 표의 어느 열인지 알게 한다.
+    """
+    lines, pos = [], 0
+    for ln in text.split("\n"):
+        lines.append((pos, pos + len(ln), ln))
+        pos += len(ln) + 1
+    is_tab = [ln.startswith(TABLE_ROW) for _, _, ln in lines]
+    skip, on = [], False                 # 표 청크를 만들지 않는 구간의 표 행
+    for (_, _, ln), t in zip(lines, is_tab):
+        if not t:
+            if TABLE_SKIP_START.match(ln):
+                on = True
+            elif on and TABLE_SKIP_END.match(ln):
+                on = False
+        skip.append(on and t)
+
+    out = []
+    # 문단: 표 행을 뺀 글로 다시 이어 붙이고, 위치는 원문 오프셋으로 되돌린다
+    prose, starts = [], []           # starts[i] = (prose 안 시작, 원문 시작)
+    p = 0
+    for (a, b, ln), t in zip(lines, is_tab):
+        if not t:
+            starts.append((p, a)); prose.append(ln); p += len(ln) + 1
+    if prose:
+        import bisect
+        ptext = "\n".join(prose)
+        keys = [s for s, _ in starts]
+
+        def orig(x):
+            i = bisect.bisect_right(keys, x) - 1
+            return starts[i][1] + (x - starts[i][0])
+        for a, b, n in chunk_doc(ptext):
+            t = ptext[a:b].strip()
+            if t:
+                out.append((orig(a), orig(max(a, b - 1)) + 1, n, "text", t))
+
+    # 표: 연속한 표 행 묶음을 다시 '머리글 줄' 단위의 표 하나하나로 나눈다
+    tok = tokenizer()
+
+    def is_caption_row(r: str) -> bool:      # '(단위 : 원)', '(기준일 : …)', '[주요 배당지표]' 같은 표 위 안내 줄
+        x = r[len(TABLE_ROW):]
+        return len(x) <= CAPTION_LINE_MAX and "—" not in x and ("(단위" in x or "기준일" in x or x.startswith("["))
+
+    def emit(caption: list[str], head_line: str | None, rows: list):
+        if not rows:
+            return
+        head = ("[표] " + " / ".join(caption) if caption else "[표]") + ("\n" + head_line if head_line else "")
+        ids = tok(head, add_special_tokens=False)["input_ids"]
+        if len(ids) > HEAD_TOKENS_MAX:                 # 머리글이 아주 긴 표(열 수십 개)는 앞부분만
+            head = tok.decode(ids[:HEAD_TOKENS_MAX]) + " …"
+            ids = ids[:HEAD_TOKENS_MAX + 2]
+        head_n = len(ids)
+        budget = max(64, CHUNK_TOKENS - head_n)
+        lens = [len(x) for x in tok([r[2] for r in rows], add_special_tokens=False)["input_ids"]]
+        s = 0
+        while s < len(rows):
+            e, total = s, 0
+            while e < len(rows) and (e == s or total + lens[e] <= budget):
+                total += lens[e]; e += 1
+            body = "\n".join(r[2] for r in rows[s:e])
+            if total > budget:                         # 행 하나가 한도보다 길면 글자 길이로 자른다
+                body = body[: max(200, len(body) * budget // total)]
+                total = budget
+            out.append((rows[s][0], rows[e - 1][1], head_n + total, "table", head + "\n" + body))
+            s = e
+
+    i = 0
+    while i < len(lines):
+        if not is_tab[i] or skip[i]:
+            i += 1; continue
+        j = i
+        while j < len(lines) and is_tab[j] and not skip[j]:
+            j += 1
+        # 표 묶음 바로 앞의 짧은 문단 줄 = 첫 표의 제목 (예: '가. 요약연결재무정보')
+        title = []
+        k = i - 1
+        while k >= 0 and not is_tab[k] and len(title) < 2 and len(lines[k][2]) <= CAPTION_LINE_MAX:
+            title.insert(0, lines[k][2]); k -= 1
+        caption, head_line, rows = list(title), None, []
+        for r in (lines[x] for x in range(i, j)):
+            text_r = r[2]
+            if text_r.startswith(TABLE_HEAD):          # 새 표 시작
+                emit(caption, head_line, rows)
+                if rows:                               # 앞 표가 있었으면 제목은 새로 (안내 줄만 이어받지 않음)
+                    caption = []
+                head_line, rows = text_r[len(TABLE_ROW):], []
+            elif is_caption_row(text_r) and not rows:
+                caption.append(text_r[len(TABLE_ROW):])
+            elif is_caption_row(text_r) and rows and head_line is None:
+                emit(caption, head_line, rows)         # 머리글 없는 표 다음의 안내 줄 = 다음 표 제목
+                caption, rows = [text_r[len(TABLE_ROW):]], []
+            else:
+                rows.append(r)
+        emit(caption, head_line, rows)
+        i = j
+    out.sort(key=lambda c: (c[0], c[3] != "text"))
+    return out
+
+
 def chunk_worker(args):
-    doc_id, text = args
-    return doc_id, chunk_doc(text)
+    """(doc_id, 본문, 출처) → (doc_id, [(시작, 끝, 토큰 수, 종류, 청크 글)])"""
+    doc_id, text, source_type = args
+    if source_type == "dart":
+        return doc_id, chunk_dart(text)
+    return doc_id, [(a, b, n, "text", text[a:b].strip()) for a, b, n in chunk_doc(text)]
 
 
 # ---- 메인 ---------------------------------------------------------------------
@@ -192,7 +310,8 @@ CHUNK_SCHEMA = pa.schema([
     ("author", pa.string()), ("published_at", pa.string()), ("url", pa.string()), ("original_url", pa.string()),
     ("stock_codes", pa.list_(pa.string())), ("stock_names", pa.list_(pa.string())), ("stock_match", pa.string()),
     ("corp_name", pa.string()), ("report_nm", pa.string()), ("rcept_no", pa.string()), ("section", pa.string()),
-    ("n_dup_sources", pa.int32()), ("crawled_at", pa.string()), ("pipeline_version", pa.string()),
+    ("n_dup_sources", pa.int32()), ("crawled_at", pa.string()), ("kind", pa.string()),
+    ("pipeline_version", pa.string()),
 ])
 
 
@@ -334,7 +453,8 @@ def chunk_stage(workers: int, names: dict | None = None):
     n_docs = pf.metadata.num_rows
     parts_dir = CHUNKS_PATH.parent / "chunk_parts"
     parts_dir.mkdir(exist_ok=True)
-    sig = f"{DOCS_PATH.stat().st_size}-{DOCS_PATH.stat().st_mtime_ns}-{WINDOW}-{CHUNK_TOKENS}-{CHUNK_OVERLAP}"
+    sig = (f"{DOCS_PATH.stat().st_size}-{DOCS_PATH.stat().st_mtime_ns}-{WINDOW}-{CHUNK_TOKENS}-{CHUNK_OVERLAP}"
+           f"-{PIPELINE_VERSION}")
     sig_file = parts_dir / "SIGNATURE"
     if not sig_file.exists() or sig_file.read_text() != sig:     # 입력이 바뀌었으면 처음부터
         for f in parts_dir.glob("part-*.parquet"):
@@ -356,20 +476,20 @@ def chunk_stage(workers: int, names: dict | None = None):
                 if part.exists():
                     continue
                 window = rb.to_pylist()
-                results = pool.map(chunk_worker, [(d["doc_id"], d["text"]) for d in window], chunksize=8)
+                results = pool.map(chunk_worker, [(d["doc_id"], d["text"], d["source_type"]) for d in window],
+                                   chunksize=8)
                 rows = []
                 for d, (_, spans) in zip(window, results):
                     kept = []
-                    for a, b, ntok in spans:
-                        t = d["text"][a:b].strip()
+                    for a, b, ntok, kind, t in spans:
                         h = hashlib.sha1(norm_for_hash(t).encode()).digest()
                         if h in seen_chunk:
                             st.add(chunk_dups=1); continue
                         seen_chunk.add(h)
-                        kept.append((a, b, ntok, t, h.hex()))
+                        kept.append((a, b, ntok, t, h.hex(), kind))
                     stock_names = [names.get(c, c) for c in (d["stock_codes"] or [])]
                     n_dup = len(json.loads(d["dup_sources"] or "[]"))
-                    for i, (a, b, ntok, t, h) in enumerate(kept):
+                    for i, (a, b, ntok, t, h, kind) in enumerate(kept):
                         rows.append(dict(
                             chunk_id=str(uuid.uuid5(NS, f"{d['doc_id']}#{i}")), doc_id=d["doc_id"], chunk_index=i,
                             n_chunks=len(kept), text=t, char_start=a, char_end=b, n_tokens=ntok, chunk_sha1=h,
@@ -378,7 +498,7 @@ def chunk_stage(workers: int, names: dict | None = None):
                             original_url=d["original_url"], stock_codes=d["stock_codes"], stock_names=stock_names,
                             stock_match=d["stock_match"], corp_name=d["corp_name"], report_nm=d["report_nm"],
                             rcept_no=d["rcept_no"], section=d["section"], n_dup_sources=n_dup,
-                            crawled_at=d["crawled_at"], pipeline_version=PIPELINE_VERSION))
+                            crawled_at=d["crawled_at"], kind=kind, pipeline_version=PIPELINE_VERSION))
                     st.add(chunks=len(kept), tokens=sum(k[2] for k in kept))
                 tmp = part.with_suffix(".tmp")
                 pq.write_table(pa.Table.from_pylist(rows, schema=CHUNK_SCHEMA), tmp, compression="zstd")

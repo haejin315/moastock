@@ -14,7 +14,7 @@ import pyarrow.parquet as pq
 from .config import BENCH_DIR, CHUNKS_PATH, DOCS_PATH, EMB_PATH
 from .embed import load_done_mask
 from .metrics import Progress, Stage
-from .stores import META_COLS, STORES
+from .stores import STORES, meta_cols
 
 
 def run(name: str, batch: int):
@@ -48,7 +48,7 @@ def run(name: str, batch: int):
         t0 = time.perf_counter()
         prog = Progress(f"{name} 적재", total=n_load)
         off = 0
-        for rb in pf.iter_batches(batch_size=batch, columns=META_COLS):
+        for rb in pf.iter_batches(batch_size=batch, columns=meta_cols(pf)):
             k = rb.num_rows
             idx = np.nonzero(done[off:off + k])[0]
             if len(idx):

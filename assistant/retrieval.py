@@ -13,7 +13,7 @@ import numpy as np
 import psycopg
 from pgvector.psycopg import register_vector
 
-from config import EVIDENCE_CHARS, EVIDENCE_MAX, PG_DSN, SEARCH_CANDIDATES
+from config import EVIDENCE_CHARS, EVIDENCE_MAX, PG_DSN, SEARCH_CANDIDATES, TABLE_CHARS, TABLE_MAX
 
 KST = timezone(timedelta(hours=9))
 _local = threading.local()
@@ -55,6 +55,9 @@ def conn():
         c = psycopg.connect(PG_DSN, autocommit=True)
         register_vector(c)
         c.execute("SET hnsw.ef_search = 100")
+        # 청크 종류(text|table) 열이 있는지 (표 청크 도입 전 DB와도 동작하게)
+        _local.has_kind = bool(c.execute("SELECT 1 FROM information_schema.columns "
+                                    "WHERE table_name = 'chunk' AND column_name = 'kind'").fetchone())
         c.execute("SET hnsw.iterative_scan = strict_order")
         _local.conn = c
     return c
@@ -79,12 +82,23 @@ class Evidence:
     original_url: str | None
     source_type: str
     report_nm: str | None
+    kind: str = "text"               # text(문단) | table(공시 표)
 
     def citation(self) -> dict:
         return {"n": self.n, "title": self.title, "publisher": self.publisher,
                 "published_at": self.published_at.astimezone(KST).strftime("%Y-%m-%d") if self.published_at else None,
                 "url": self.url, "original_url": self.original_url, "type": self.source_type,
-                "report": self.report_nm}
+                "report": self.report_nm, "kind": self.kind}
+
+
+def clip(content: str, kind: str) -> str:
+    """근거 길이 제한. 표는 행 중간에서 자르지 않는다."""
+    if kind != "table":
+        return content[:EVIDENCE_CHARS]
+    if len(content) <= TABLE_CHARS:
+        return content
+    cut = content.rfind("\n", 0, TABLE_CHARS)
+    return content[:cut if cut > 0 else TABLE_CHARS]
 
 
 def search(query: str, *, stocks: list[str] | None = None, since_days: int | None = None,
@@ -100,17 +114,21 @@ def search(query: str, *, stocks: list[str] | None = None, since_days: int | Non
         where.append("published_at >= %s"); args.append(datetime.now(KST) - timedelta(days=since_days))
     if source in ("news", "dart"):
         where.append("source_type = %s"); args.append(source)
-    sql = (f"SELECT chunk_id, doc_id, content, published_at, source_type, 1 - (embedding <=> %s) AS score "
+    conn()
+    kind_col = "kind" if _local.has_kind else "'text'"
+    sql = (f"SELECT chunk_id, doc_id, content, published_at, source_type, 1 - (embedding <=> %s) AS score, "
+           f"{kind_col} AS kind "
            f"FROM chunk {'WHERE ' + ' AND '.join(where) if where else ''} "
            f"ORDER BY embedding <=> %s LIMIT {SEARCH_CANDIDATES}")
     rows = conn().execute(sql, (vec, *args, vec)).fetchall()
 
-    # 문서당 최대 2개 - 한 기사에 근거가 쏠리지 않게
-    picked, per_doc = [], {}
+    # 문서당 최대 2개 - 한 기사에 근거가 쏠리지 않게. 공시 표 청크는 전체에서 TABLE_MAX개까지
+    picked, per_doc, tables = [], {}, 0
     for r in rows:
-        if per_doc.get(r[1], 0) >= 2:
+        if per_doc.get(r[1], 0) >= 2 or (r[6] == "table" and tables >= TABLE_MAX):
             continue
         per_doc[r[1]] = per_doc.get(r[1], 0) + 1
+        tables += r[6] == "table"
         picked.append(r)
         if len(picked) >= limit:
             break
@@ -120,9 +138,9 @@ def search(query: str, *, stocks: list[str] | None = None, since_days: int | Non
         "SELECT doc_id, title, publisher, url, original_url, report_nm FROM doc WHERE doc_id = ANY(%s)",
         ([r[1] for r in picked],)).fetchall()}
     out = []
-    for i, (cid, did, content, pub, stype, score) in enumerate(picked, 1):
+    for i, (cid, did, content, pub, stype, score, kind) in enumerate(picked, 1):
         d = docs.get(did, (did, did, None, "", None, None))
-        out.append(Evidence(n=i, chunk_id=str(cid), doc_id=did, text=content[:EVIDENCE_CHARS], score=float(score),
+        out.append(Evidence(n=i, chunk_id=str(cid), doc_id=did, text=clip(content, kind), score=float(score),
                             title=d[1], publisher=d[2], published_at=pub, url=d[3], original_url=d[4],
-                            source_type=stype, report_nm=d[5]))
+                            source_type=stype, report_nm=d[5], kind=kind))
     return out

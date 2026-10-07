@@ -157,6 +157,9 @@ ANSWER_SYS = """너는 모아스톡의 AI 비서다. 아래 [근거]만 사용�
 3. 날짜가 중요하면 "N월 N일 공시/보도에 따르면"처럼 시점을 밝힌다.
 4. 매수·매도 추천이나 주가 예측은 하지 않는다.
 5. 3~6문장 또는 짧은 목록으로 간결하게 답한다.
+6. (공시 표) 근거의 '열:' 줄이 열 이름이고, 아래 각 줄은 '행 이름 — 값 · 값 …'으로 값이 열 순서대로 놓여 있다.
+   값을 옮길 때는 행 이름과 열 이름(기간 등)을 함께 밝히고, 단위는 표의 '(단위 : …)'를 그대로 붙인다.
+   예: "제58기 반기 현금배당금총액은 4,909,211백만원이다[2]."
 형식 예시: "8월 10일 공시에 따르면 회사는 50억원 규모의 전환사채 발행을 결정했다[1]. 전환가액은 1주당 3,200원이다[1]."
 인용 번호 없이 끝나는 문장은 쓰지 않는다."""
 
@@ -186,6 +189,9 @@ def evidence_block(ev: list[Evidence]) -> str:
     out = []
     for e in ev:
         date = e.published_at.strftime("%Y-%m-%d") if e.published_at else "날짜 미상"
+        if e.kind == "table":            # 표는 단위가 '(단위 : 백만원)' 등으로 따로 있어 원 단위 환산을 붙이지 않는다
+            out.append(f"[{e.n}] (공시 표, {date}, {e.publisher or '-'}) {e.title}\n{e.text}")
+            continue
         kind = "공시" if e.source_type == "dart" else "뉴스"
         out.append(f"[{e.n}] ({kind}, {date}, {e.publisher or '-'}) {e.title}\n{with_korean_units(e.text)}")
     return "\n\n".join(out)
