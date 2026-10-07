@@ -9,3 +9,5 @@ rag/**/__pycache__/
 chat/.wrangler/
 assistant/eval/results/
 assistant/__pycache__/
+__pycache__/
+*.pyc
