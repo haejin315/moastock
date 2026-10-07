@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import re
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -101,6 +102,37 @@ def clip(content: str, kind: str) -> str:
     return content[:cut if cut > 0 else TABLE_CHARS]
 
 
+# 질문에서 표 항목명 후보 뽑기: 조사·어미를 떼고, 종목명·일반어는 뺀다
+_PARTICLE = re.compile(r"(으로|에서|까지|부터|이랑|하고|이야|인가요|인가|이에요|예요|은|는|이|가|을|를|과|와|의|도|에|로|랑|야)$")
+_STOP = {"알려줘", "알려주세요", "얼마야", "얼마", "얼마인가", "기준", "공시", "보고서", "반기보고서", "분기보고서",
+         "사업보고서", "최근", "내용", "정리", "정리해줘", "요약", "요약해줘", "관련", "현재", "어떻게", "있어", "뭐야"}
+
+
+def table_terms(query: str) -> list[str]:
+    out = []
+    for w in re.split(r"[\s,.?!·/()\[\]\"']+", query):
+        w = _PARTICLE.sub("", w)
+        if len(w) < 3 or w in _STOP or resolve_stocks(w) or re.fullmatch(r"[\d년월일말기분반]+", w):
+            continue
+        out.append(w)
+    return out[:4]
+
+
+def table_hits(query: str, vec, where: list[str], args: list) -> list:
+    """표 청크 중 항목명이 많이 들어간 것 (최대 TABLE_MAX개). 행 모양은 벡터 검색 결과와 같게."""
+    terms = table_terms(query)
+    if not terms:
+        return []
+    pats = [f"%{t}%" for t in terms]
+    hits = " + ".join(["(content LIKE %s)::int"] * len(pats))
+    cond = " AND ".join(where + ["kind = 'table'", "content LIKE ANY(%s)"])
+    sql = (f"SELECT chunk_id, doc_id, content, published_at, source_type, 1 - (embedding <=> %s) AS score, kind, "
+           f"{hits} AS hits FROM chunk WHERE {cond} ORDER BY hits DESC, embedding <=> %s LIMIT {TABLE_MAX}")
+    rows = conn().execute(sql, (vec, *pats, *args, pats, vec)).fetchall()
+    need = max(1, (len(terms) + 1) // 2)              # 항목명의 절반 이상이 들어간 표만
+    return [r[:7] for r in rows if r[7] >= need]
+
+
 def search(query: str, *, stocks: list[str] | None = None, since_days: int | None = None,
            period: tuple[datetime, datetime] | None = None,
            source: str | None = None, limit: int = EVIDENCE_MAX) -> list[Evidence]:
@@ -121,6 +153,10 @@ def search(query: str, *, stocks: list[str] | None = None, since_days: int | Non
            f"FROM chunk {'WHERE ' + ' AND '.join(where) if where else ''} "
            f"ORDER BY embedding <=> %s LIMIT {SEARCH_CANDIDATES}")
     rows = conn().execute(sql, (vec, *args, vec)).fetchall()
+    # 종목이 정해진 질문: 표에서 항목명이 그대로 들어간 청크를 먼저 (작은 임베딩 모델은 비슷한 숫자 표를 잘 못 가른다)
+    lexical = table_hits(query, vec, where, args) if (stocks and _local.has_kind and source != "news") else []
+    seen = {r[0] for r in lexical}
+    rows = lexical + [r for r in rows if r[0] not in seen]
 
     # 문서당 최대 2개 - 한 기사에 근거가 쏠리지 않게. 공시 표 청크는 전체에서 TABLE_MAX개까지
     picked, per_doc, tables = [], {}, 0
