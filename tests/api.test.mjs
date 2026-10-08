@@ -182,22 +182,32 @@ test("screener: 미국(나스닥 API) - 기호를 야후 형식으로, $·% 떼�
   assert.equal(by.AAPL.value, Math.round(336.67 * 2000));
 });
 
-test("screener: 코인(업비트 원화마켓) - 원화 마켓만, 등락률은 %로", async () => {
+test("screener: 코인 - 업비트·빗썸·바이낸스, 바이낸스는 원화 환산, 김치 프리미엄", async () => {
+  const krwTicker = (price) => (url) => {
+    assert.ok(!url.includes("BTC-ETH"), "원화마켓만 조회");
+    return [{ market: "KRW-BTC", trade_price: price, signed_change_rate: -0.0032, acc_trade_volume_24h: 10,
+              acc_trade_price_24h: 1.5e12 }];
+  };
   mockFetch([
-    ["/market/all", () => [{ market: "KRW-BTC" }, { market: "BTC-ETH" }, { market: "KRW-ETH" }]],
-    ["/v1/ticker", (url) => {
-      assert.ok(!url.includes("BTC-ETH"), "원화마켓만 조회");
-      return [{ market: "KRW-BTC", trade_price: 113181000, signed_change_rate: -0.0032, acc_trade_volume_24h: 10,
-                acc_trade_price_24h: 1.5e12 },
-              { market: "KRW-ETH", trade_price: 3510000, signed_change_rate: 0.01234, acc_trade_volume_24h: 5,
-                acc_trade_price_24h: 2.4e11 }];
-    }],
+    ["/v8/finance/chart/KRW%3DX", () => ({ chart: { result: [{ meta: { regularMarketPrice: 1400 } }] } })],
+    ["api.upbit.com/v1/market/all", () => [{ market: "KRW-BTC" }, { market: "BTC-ETH" }]],
+    ["api.upbit.com/v1/ticker", krwTicker(142800000)],
+    ["api.bithumb.com/v1/market/all", () => [{ market: "KRW-BTC" }]],
+    ["api.bithumb.com/v1/ticker", krwTicker(140000000)],
+    ["data-api.binance.vision", () => [
+      { symbol: "BTCUSDT", lastPrice: "100000", priceChangePercent: "-1.389", volume: "2", quoteVolume: "200000" },
+      { symbol: "ETHBTC", lastPrice: "0.03", priceChangePercent: "0", volume: "1", quoteVolume: "1" },
+    ]],
   ]);
   const r = await bodyOf(await screener.onRequestGet(ctx("/api/screener?market=COIN")));
-  const by = Object.fromEntries(r.data.quotes.map((q) => [q.code, q]));
-  assert.equal(by.BTC.change, -0.32);
-  assert.equal(by.ETH.change, 1.23);
-  assert.equal(by.BTC.value, 1.5e12);
+  const by = Object.fromEntries(r.data.quotes.map((q) => [`${q.exchange}:${q.code}`, q]));
+  assert.equal(r.data.usdkrw, 1400);
+  assert.equal(by["BINANCE:BTC"].price, 140000000, "100,000달러 × 1,400원");
+  assert.equal(by["BINANCE:BTC"].value, 280000000);
+  assert.equal(by["UPBIT:BTC"].premium, 2, "142.8백만 / 140백만 - 1 = 2%");
+  assert.equal(by["BITHUMB:BTC"].premium, 0);
+  assert.equal(by["UPBIT:BTC"].change, -0.32);
+  assert.ok(!by["BINANCE:ETH"], "USDT 마켓만");
 });
 
 // ---- /api/chart --------------------------------------------------------------

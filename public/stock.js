@@ -16,7 +16,7 @@ const MARKETS = {
   COIN: { data: "/data/coins.json", currency: "KRW", source: "업비트·코인게코" },
 };
 const MARKET_LABEL = { KOSPI: "코스피", KOSDAQ: "코스닥", NASDAQ: "나스닥", NYSE: "뉴욕", AMEX: "아멕스", TSE: "도쿄",
-  UPBIT: "업비트", GLOBAL: "해외 거래소" };
+  UPBIT: "업비트", BITHUMB: "빗썸", BINANCE: "바이낸스" };
 const market = MARKETS[(params.get("market") || "KR").toUpperCase()] ? (params.get("market") || "KR").toUpperCase() : "KR";
 const M = MARKETS[market];
 // 국내는 6자리 종목코드, 해외·코인은 야후 기호 (토론방 글도 이 값으로 묶는다)
@@ -73,7 +73,8 @@ async function loadInfo() {
   try {
     const body = await (await fetch(M.data)).json();
     stock = body.stocks.find((s) => market === "KR" ? s.code === code
-      : market === "COIN" ? `${s.code}-KRW` === code : s.symbol === code) || null;
+      : market === "COIN" ? `${s.code}-KRW` === code && s.market === (params.get("exchange") || "UPBIT").toUpperCase()
+      : s.symbol === code) || null;
     snapshotAt = body.generatedAt || "";
   } catch (e) { /* 스냅샷 없이도 차트는 동작 */ }
   if (stock) {
@@ -102,6 +103,7 @@ function renderFacts(livePrice = null) {
     $("#facts").innerHTML = [
       ["시가총액", fmtBig(marketCap)], ["시가총액 순위", s.rank ? `${s.rank}위` : "-"],
       ["24시간 거래대금", fmtBig(s.value)], ["52주 최고가", fmtPrice(s.high52w)], ["52주 최저가", fmtPrice(s.low52w)],
+      ["김치 프리미엄(바이낸스 대비)", s.premium === null || s.premium === undefined ? "-" : (s.premium > 0 ? "+" : "") + s.premium.toFixed(2) + "%"],
     ].map(([k, v]) => `<div class="fact"><div class="fact-k">${k}</div><div class="fact-v">${v}</div></div>`).join("");
     $("#facts-note").textContent = `코인 지표: ${M.source} ${String(snapshotAt).slice(0, 10)} 기준`;
     return;

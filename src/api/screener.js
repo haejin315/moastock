@@ -3,7 +3,8 @@
 // PER 등 펀더멘털은 일일 스냅샷(/data/snapshot.json, us.json, jp.json, coins.json)이 담당하고,
 // 클라이언트가 종목코드로 병합한다.
 //   KOSPI·KOSDAQ: 네이버 모바일 증권 (페이지 팬아웃 10~19 서브요청)
-//   US: 나스닥 스크리너 API (나스닥·뉴욕·아멕스 3번)   COIN: 업비트 원화마켓 (목록 1 + 시세 3번)
+//   US: 나스닥 스크리너 API (나스닥·뉴욕·아멕스 3번)
+//   COIN: 업비트·빗썸 원화마켓 + 바이낸스(원/달러 환산) + 김치 프리미엄 (서브요청 10개 안팎)
 // 일본은 장중 갱신 없이 일일 스냅샷만 쓴다. 모두 60초 엣지 캐시.
 import { json, bad, cached, fetchUpstream } from "./_utils.js";
 
@@ -72,20 +73,63 @@ async function usQuotes() {
   return json({ market: "US", count: rows.length, quotes: rows }, { maxAge: CACHE_SEC });
 }
 
-async function coinQuotes() {
-  const markets = (await (await fetchUpstream("https://api.upbit.com/v1/market/all?isDetails=false")).json())
+// 업비트·빗썸 원화마켓 (두 거래소 공개 API 형식이 같다)
+async function krwExchange(base, label) {
+  const markets = (await (await fetchUpstream(`${base}/v1/market/all?isDetails=false`)).json())
     .map((m) => m.market).filter((m) => m.startsWith("KRW-"));
   const rows = [];
   for (let i = 0; i < markets.length; i += 100) {
     const part = markets.slice(i, i + 100).join(",");
-    for (const t of await (await fetchUpstream(`https://api.upbit.com/v1/ticker?markets=${part}`)).json()) {
+    for (const t of await (await fetchUpstream(`${base}/v1/ticker?markets=${part}`)).json()) {
       rows.push({
-        code: t.market.slice(4), price: t.trade_price, change: Math.round(t.signed_change_rate * 10000) / 100,
+        exchange: label, code: t.market.slice(4), price: t.trade_price,
+        change: Math.round(t.signed_change_rate * 10000) / 100,
         volume: t.acc_trade_volume_24h, value: Math.round(t.acc_trade_price_24h),
       });
     }
   }
-  return json({ market: "COIN", count: rows.length, quotes: rows }, { maxAge: CACHE_SEC });
+  return rows;
+}
+
+// 바이낸스 USDT 마켓 (지역 제한 없는 공개 시세 미러) - 원/달러로 원화 환산
+async function binanceRows(usdkrw) {
+  const rows = [];
+  for (const t of await (await fetchUpstream("https://data-api.binance.vision/api/v3/ticker/24hr")).json()) {
+    if (!t.symbol.endsWith("USDT")) continue;
+    const usd = Number(t.lastPrice);
+    if (!(usd > 0)) continue;
+    const krw = usd * usdkrw;
+    rows.push({
+      exchange: "BINANCE", code: t.symbol.slice(0, -4), priceUsd: usd,
+      price: krw < 100 ? Math.round(krw * 1e4) / 1e4 : Math.round(krw),
+      change: Math.round(Number(t.priceChangePercent) * 100) / 100,
+      volume: Number(t.volume), value: Math.round(Number(t.quoteVolume) * usdkrw),
+    });
+  }
+  return rows;
+}
+
+async function usdKrw() {
+  const body = await (await fetchUpstream(
+    "https://query1.finance.yahoo.com/v8/finance/chart/KRW%3DX?range=1d&interval=1d")).json();
+  return body?.chart?.result?.[0]?.meta?.regularMarketPrice;
+}
+
+// 코인: 업비트·빗썸·바이낸스 + 국내 거래소의 김치 프리미엄(바이낸스 원화 환산가 대비 %)
+async function coinQuotes() {
+  const usdkrw = await usdKrw();
+  const [up, bt, bn] = await Promise.all([
+    krwExchange("https://api.upbit.com", "UPBIT"),
+    krwExchange("https://api.bithumb.com", "BITHUMB"),
+    usdkrw ? binanceRows(usdkrw).catch(() => []) : [],
+  ]);
+  const bnBy = new Map(bn.map((r) => [r.code, r]));
+  for (const r of [...up, ...bt]) {
+    const b = bnBy.get(r.code);
+    if (b && b.priceUsd && usdkrw) r.premium = Math.round((r.price / (b.priceUsd * usdkrw) - 1) * 10000) / 100;
+  }
+  const quotes = [...up, ...bt, ...bn];
+  return json({ market: "COIN", usdkrw, count: quotes.length, quotes }, { maxAge: CACHE_SEC });
 }
 
 function toNum(text) {

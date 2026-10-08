@@ -6,12 +6,14 @@
   us.json    미국: 나스닥·뉴욕증권거래소·아멕스 상장 종목 (시가총액 1억 달러 이상)
              + S&P 500·나스닥 100 편입 여부(tags). 시세·지표는 야후 파이낸스.
   jp.json    일본: 니케이 225 구성 종목. 시세·지표는 야후 파이낸스.
-  coins.json 코인: 업비트 원화마켓 전체 + 코인게코 시가총액 상위 250 (원화 기준).
+  coins.json 코인: 업비트·빗썸 원화마켓 + 바이낸스 USDT 마켓 (가격은 모두 원화, 바이낸스는 원/달러 환산)
+             + 코인게코 시가총액, 국내 거래소의 김치 프리미엄(바이낸스 대비 %).
 
 데이터 출처
   - 종목 목록: 나스닥 스크리너 API(미국 상장 전 종목·업종), 나스닥 100 구성 API, 위키백과(S&P 500·니케이 225 구성)
   - 시세·지표: 야후 파이낸스 v7 quote (PER·PBR·EPS·BPS·배당수익률·52주 범위·시가총액)
-  - 코인: 업비트 공개 API(원화 시세·52주 범위), 코인게코 공개 API(시가총액)
+  - 코인: 업비트·빗썸 공개 API(원화 시세·52주 범위), 바이낸스 공개 시세 미러(data-api.binance.vision),
+          코인게코 공개 API(시가총액), 야후 파이낸스(원/달러 환율)
 행 필드는 국내 스냅샷과 같은 이름을 쓴다 (스크리너·수식이 그대로 동작하게).
 """
 from __future__ import annotations
@@ -204,47 +206,78 @@ def build_jp() -> dict:
 
 # ---- 코인 ----------------------------------------------------------------------------
 
-def build_coins() -> dict:
-    markets = [m for m in get("https://api.upbit.com/v1/market/all", params={"isDetails": "false"})
-               if m["market"].startswith("KRW-")]
+STABLE = {"USDT", "USDC", "FDUSD", "TUSD", "DAI", "BUSD", "USDP", "USDE", "PYUSD", "USD1", "EUR", "TRY", "BRL"}
+
+
+def korean_exchange(base: str, label: str) -> dict:
+    """업비트·빗썸 원화마켓 (두 거래소 공개 API 형식이 같다) → {기호: 행}"""
+    markets = [m for m in get(f"{base}/v1/market/all", params={"isDetails": "false"}) if m["market"].startswith("KRW-")]
     names = {m["market"][4:]: (m.get("korean_name"), m.get("english_name")) for m in markets}
-    tick = {}
     syms = [m["market"] for m in markets]
+    rows = {}
     for i in range(0, len(syms), 100):
-        for t in get("https://api.upbit.com/v1/ticker", params={"markets": ",".join(syms[i:i + 100])}):
-            tick[t["market"][4:]] = t
+        for t in get(f"{base}/v1/ticker", params={"markets": ",".join(syms[i:i + 100])}):
+            sym = t["market"][4:]
+            ko, en = names.get(sym, (None, None))
+            rows[sym] = {"code": sym, "name": ko or en or sym, "nameEn": en, "market": label,
+                         "price": t["trade_price"], "change": round(t["signed_change_rate"] * 100, 2),
+                         "volume": t.get("acc_trade_volume_24h"), "value": round(t["acc_trade_price_24h"]),
+                         "high52w": t.get("highest_52_week_price"), "low52w": t.get("lowest_52_week_price")}
+    print(f"  {label}: {len(rows)}종목", flush=True)
+    return rows
+
+
+def binance(usdkrw: float) -> dict:
+    """바이낸스 USDT 마켓 (지역 제한 없는 공개 시세 미러). 가격·거래대금은 원/달러 환율로 원화 환산."""
+    rows = {}
+    for t in get("https://data-api.binance.vision/api/v3/ticker/24hr"):
+        s = t["symbol"]
+        if not s.endswith("USDT") or float(t["lastPrice"]) <= 0 or float(t["quoteVolume"]) <= 0:
+            continue
+        sym = s[:-4]
+        if sym in STABLE or re.search(r"(UP|DOWN|BULL|BEAR)$", sym):
+            continue
+        usd = float(t["lastPrice"])
+        rows[sym] = {"code": sym, "name": sym, "nameEn": None, "market": "BINANCE",
+                     "price": round(usd * usdkrw, 4 if usd * usdkrw < 100 else 0), "priceUsd": usd,
+                     "change": round(float(t["priceChangePercent"]), 2), "volume": float(t["volume"]),
+                     "value": round(float(t["quoteVolume"]) * usdkrw), "high52w": None, "low52w": None}
+    print(f"  바이낸스: {len(rows)}종목 (원/달러 {usdkrw:,.2f})", flush=True)
+    return rows
+
+
+def build_coins() -> dict:
+    usdkrw = yahoo_quotes(["KRW=X"])["KRW=X"]["regularMarketPrice"]
+    up = korean_exchange("https://api.upbit.com", "UPBIT")
+    bt = korean_exchange("https://api.bithumb.com", "BITHUMB")
+    bn = binance(usdkrw)
     gecko = []
-    for page in (1, 2, 3):                            # 시가총액 상위 250 (100개씩 3쪽, 끝쪽은 50개만 씀)
+    for page in (1, 2, 3):                            # 시가총액 상위 250
         gecko += get("https://api.coingecko.com/api/v3/coins/markets",
                      params={"vs_currency": "krw", "order": "market_cap_desc", "per_page": 100, "page": page})
         time.sleep(3)
-    gecko = gecko[:250]
     caps = {}
-    for g in gecko:                                   # 같은 기호가 여러 개면 시가총액 큰 것
+    for g in gecko[:250]:                             # 같은 기호가 여러 개면 시가총액 큰 것
         caps.setdefault(g["symbol"].upper(), g)
-    coins = {}
-    for sym, t in tick.items():
-        g = caps.get(sym)
-        ko, en = names.get(sym, (None, None))
-        coins[sym] = {
-            "code": sym, "symbol": f"KRW-{sym}", "name": ko or en or sym, "nameEn": en, "market": "UPBIT",
-            "tags": ["upbit"] + (["top"] if g else []), "price": t["trade_price"],
-            "change": round(t["signed_change_rate"] * 100, 2), "volume": t.get("acc_trade_volume_24h"),
-            "value": round(t["acc_trade_price_24h"]), "marketCap": g["market_cap"] if g else None,
-            "high52w": t.get("highest_52_week_price"), "low52w": t.get("lowest_52_week_price"),
-            "rank": g.get("market_cap_rank") if g else None,
-        }
-    for sym, g in caps.items():
-        if sym in coins:
-            continue
-        coins[sym] = {
-            "code": sym, "symbol": None, "name": g["name"], "nameEn": g["name"], "market": "GLOBAL", "tags": ["top"],
-            "price": g["current_price"], "change": round(g["price_change_percentage_24h"] or 0, 2),
-            "volume": None, "value": round(g["total_volume"]) if g.get("total_volume") else None,
-            "marketCap": g["market_cap"], "high52w": None, "low52w": None, "rank": g.get("market_cap_rank"),
-        }
-    stocks = sorted(coins.values(), key=lambda c: -(c.get("marketCap") or 0))
-    return {"region": "COIN", "currency": "KRW", "stocks": stocks}
+    names_ko = {k: v["name"] for src in (up, bt) for k, v in src.items()}
+    stocks = []
+    for ex in (up, bt, bn):
+        for sym, r in ex.items():
+            g = caps.get(sym)
+            if r["market"] == "BINANCE":
+                r["name"] = names_ko.get(sym) or (g["name"] if g else sym)
+                r["nameEn"] = g["name"] if g else None
+            r["marketCap"] = g["market_cap"] if g else None
+            r["rank"] = g.get("market_cap_rank") if g else None
+            r["symbol"] = f"{sym}-KRW"
+            r["tags"] = [r["market"].lower()] + (["top"] if g else [])
+            # 김치 프리미엄: 국내 거래소 원화 가격 ÷ (바이낸스 달러 가격 × 원/달러) - 1
+            b = bn.get(sym)
+            if r["market"] != "BINANCE" and b and b["priceUsd"]:
+                r["premium"] = round((r["price"] / (b["priceUsd"] * usdkrw) - 1) * 100, 2)
+            stocks.append(r)
+    stocks.sort(key=lambda c: -(c.get("marketCap") or 0))
+    return {"region": "COIN", "currency": "KRW", "usdkrw": usdkrw, "stocks": stocks}
 
 
 def write(name: str, body: dict):

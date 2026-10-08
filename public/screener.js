@@ -23,19 +23,24 @@ const REGIONS = {
   JP: { label: "일본", title: "니케이 225", data: "/data/jp.json", currency: "JPY", live: [],
     subs: [["all", "니케이 225"]],
     source: "구성 종목: 위키백과 · 시세·재무 지표: 야후 파이낸스 (하루 한 번 갱신)." },
+  // 코인은 같은 코인이 거래소마다 따로 있어 '전체' 없이 거래소를 고른다 (첫 버튼이 기본)
   COIN: { label: "코인", title: "코인", data: "/data/coins.json", currency: "KRW", live: ["COIN"],
-    subs: [["all", "전체"], ["upbit", "업비트 원화마켓"], ["top", "시가총액 상위 250"]],
-    source: "시세·52주 범위: 업비트 · 시가총액: 코인게코 (원화 기준, 등락률은 24시간)." },
+    subs: [["UPBIT", "업비트"], ["BITHUMB", "빗썸"], ["BINANCE", "바이낸스"]],
+    source: "시세: 업비트·빗썸·바이낸스(원/달러 환산) · 시가총액: 코인게코 · 김치 프리미엄은 바이낸스 대비 " +
+      "(원화 기준, 등락률은 24시간)." },
 };
 // 시장마다 없는 지표 (컬럼 메뉴에서 숨긴다)
 const NO_COLS = {
-  US: new Set(["foreignRate"]),
-  JP: new Set(["foreignRate"]),
+  KR: new Set(["premium"]),
+  US: new Set(["foreignRate", "premium"]),
+  JP: new Set(["foreignRate", "premium"]),
   COIN: new Set(["industry", "per", "pbr", "eps", "bps", "roe", "netIncome", "equity", "shares", "dividendYield", "dps",
     "foreignRate"]),
 };
 const MARKET_LABEL = { KOSPI: "코스피", KOSDAQ: "코스닥", NASDAQ: "나스닥", NYSE: "뉴욕", AMEX: "아멕스", TSE: "도쿄",
-  UPBIT: "업비트", GLOBAL: "해외 거래소" };
+  UPBIT: "업비트", BITHUMB: "빗썸", BINANCE: "바이낸스" };
+// 행 식별자: 코인은 거래소마다 같은 기호가 있어 '거래소:기호'
+const keyOf = (r) => state.region === "COIN" ? `${r.market}:${r.code}` : r.code;
 
 // ---- 컬럼 정의 -----------------------------------------------------------
 
@@ -91,6 +96,8 @@ const COLUMNS = [
   { key: "high52w", label: "52주고", full: "52주 최고가", fmt: fmtPrice, w: 92 },
   { key: "low52w", label: "52주저", full: "52주 최저가", fmt: fmtPrice, w: 92 },
   { key: "pos52", label: "52주위치%", full: "52주 위치(%)", fmt: fmtRatio, w: 94 },
+  { key: "premium", label: "김프%", full: "김치 프리미엄(%)", fmt: (v) => v === null || v === undefined ? "-"
+    : (v > 0 ? "+" : "") + v.toFixed(2), w: 84 },
 ];
 // label: 표 제목(폭이 좁아 짧게), full: 줄임말 없는 이름 - 카드·정렬·컬럼 메뉴·제목 툴팁에 쓴다
 for (const c of COLUMNS) c.full ??= c.label;
@@ -149,7 +156,13 @@ const state = {
 if (!state.columns.length) state.columns = [...DEFAULT_COLUMNS];
 let nextFormulaId = 1;
 const colAvailable = (key) => !NO_COLS[state.region]?.has(key);
-const visibleColumns = () => state.columns.filter(colAvailable);
+const visibleColumns = () => {
+  const cols = state.columns.filter(colAvailable);
+  // 코인(국내 거래소)은 김치 프리미엄을 늘 보여 준다 - 바이낸스는 기준 거래소라 없음
+  if (state.region === "COIN" && state.universe !== "BINANCE" && !cols.includes("premium")) cols.splice(1, 0, "premium");
+  if (state.region === "COIN" && state.universe === "BINANCE") return cols.filter((k) => k !== "premium");
+  return cols;
+};
 const formulaKey = (f) => `__f${f.id}`;
 
 const $ = (sel) => document.querySelector(sel);
@@ -230,7 +243,7 @@ async function loadRegion(region) {
   const R = REGIONS[region];
   state.region = region;
   saveJson("moastock.region", region);
-  state.universe = "all";
+  state.universe = R.subs[0][0];
   state.industries.clear();
   state.page = 1;
   state.rows = [];
@@ -245,7 +258,7 @@ async function loadRegion(region) {
   const body = await (await fetch(R.data)).json();
   if (seq !== loadSeq) return;                       // 그새 다른 시장을 골랐다
   state.rows = body.stocks.map((s) => ({ ...s }));
-  state.rows.forEach(computeDerived);
+  state.rows.forEach((r) => { r.key = keyOf(r); computeDerived(r); });
   $("#data-info").textContent = `기준 ${String(body.generatedAt).slice(0, 16).replace("T", " ")} · ${body.count}종목`;
   buildIndustryMenu();
   render();
@@ -271,11 +284,13 @@ async function refreshLive() {
     );
     if (region !== state.region) return;
     const live = new Map();
-    for (const body of results) for (const q of body.quotes || []) live.set(q.code, q);
+    for (const body of results) {
+      for (const q of body.quotes || []) live.set(region === "COIN" ? `${q.exchange}:${q.code}` : q.code, q);
+    }
     for (const row of state.rows) {
-      const q = live.get(row.code);
+      const q = live.get(row.key);
       if (!q) continue;
-      for (const k of ["price", "change", "volume", "value", "marketCap"]) {
+      for (const k of ["price", "change", "volume", "value", "marketCap", "premium"]) {
         if (q[k] !== null && q[k] !== undefined) row[k] = q[k];
       }
       if (row.eps !== null && row.eps !== undefined && row.price) {
@@ -477,14 +492,14 @@ function sparkSvg(points, change, w = 84, h = 26) {
 async function fillSparks(rows) {
   const epoch = ++sparkEpoch;   // 페이지가 바뀌면 이전 요청 결과는 버린다
   const now = Date.now();
-  const missing = rows.filter((r) => {
-    const hit = sparkCache.get(r.code);
+    const missing = rows.filter((r) => {
+    const hit = sparkCache.get(r.key);
     return !hit || now - hit.t > SPARK_TTL;
   });
   for (let i = 0; i < missing.length; i += 20) {
     const part = missing.slice(i, i + 20);
     try {
-      const codeOf = new Map(part.map((r) => [symbolOf(r), r.code]));
+      const codeOf = new Map(part.map((r) => [symbolOf(r), r.key]));
       const symbols = [...codeOf.keys()].join(",");
       const body = await (await fetch(`/api/quote?symbols=${encodeURIComponent(symbols)}`)).json();
       for (const q of body.quotes || []) {
@@ -505,7 +520,7 @@ function paintSparks() {
     const code = td.dataset.spark;
     const hit = sparkCache.get(code);
     if (!hit) return;
-    const row = state.rows.find((r) => r.code === code);
+    const row = state.rows.find((r) => r.key === code);
     td.innerHTML = sparkSvg(hit.spark, row ? row.change : 0);
   });
 }
@@ -573,21 +588,21 @@ function render() {
 
   renderHead();
   $("#screener-table tbody").innerHTML = slice.map((r, idx) => {
-    const cached = sparkCache.get(r.code);
+    const cached = sparkCache.get(r.key);
     const cells = [
-      `<td class="c-star"><button class="star ${watchHasCode(r) ? "on" : ""}" data-code="${r.code}" title="관심종목">★</button></td>`,
+      `<td class="c-star"><button class="star ${watchHasCode(r) ? "on" : ""}" data-code="${esc(r.key)}" title="관심종목">★</button></td>`,
       `<td class="c-name"><span class="rank muted">${(state.page - 1) * PAGE + idx + 1}</span> ${esc(r.nameKo || r.name)}
         <div class="sym">${esc(r.code)} · ${esc(MARKET_LABEL[r.market] || r.market || "")}${
           r.nameKo && r.name !== r.nameKo ? ` · <span class="name-ko">${esc(r.name)}</span>` : ""}</div></td>`,
       // 휴대폰 카드 머리: 현재가 + 등락률 (데스크톱 표에서는 숨김)
       `<td class="c-mhead"><b>${fmtPrice(r.price)}</b><span class="${chgClass(r.change)}">${
         r.change === null || r.change === undefined ? "-" : (r.change > 0 ? "+" : "") + r.change.toFixed(2) + "%"}</span></td>`,
-      `<td class="c-spark" data-spark="${r.code}">${cached ? sparkSvg(cached.spark, r.change) : '<span class="muted">·</span>'}</td>`,
+      `<td class="c-spark" data-spark="${esc(r.key)}">${cached ? sparkSvg(cached.spark, r.change) : '<span class="muted">·</span>'}</td>`,
       `<td class="num c-change ${chgClass(r.change)}">${r.change === null || r.change === undefined ? "-" : r.change.toFixed(2)}</td>`,
       ...visibleColumns().map((key) => cellHtml(r, key)),
       ...state.formulas.map((f) => `<td class="num c-metric c-formula" data-label="${esc(f.name)}">${fmtRatio(r[formulaKey(f)] ?? null)}</td>`),
     ];
-    return `<tr class="rowlink" data-code="${r.code}">${cells.join("")}</tr>`;
+    return `<tr class="rowlink" data-code="${esc(r.key)}">${cells.join("")}</tr>`;
   }).join("");
   fillSparks(slice);
 
@@ -860,7 +875,7 @@ $("#sort-chips").addEventListener("dragend", () => {
 $("#screener-table").addEventListener("click", (e) => {
   const btn = e.target.closest(".star");
   if (btn) {
-    const row = state.rows.find((r) => r.code === btn.dataset.code);
+    const row = state.rows.find((r) => r.key === btn.dataset.code);
     if (!row) return;
     const sym = symbolOf(row);
     watch.has(sym) ? watch.delete(sym) : watch.add(sym);
@@ -871,8 +886,11 @@ $("#screener-table").addEventListener("click", (e) => {
   const tr = e.target.closest("tr.rowlink");
   if (!tr) return;
   if (state.region === "KR") { location.href = `/stock.html?code=${tr.dataset.code}`; return; }
-  const row = state.rows.find((r) => r.code === tr.dataset.code);
-  if (row) location.href = `/stock.html?market=${state.region}&symbol=${encodeURIComponent(symbolOf(row))}`;
+  const row = state.rows.find((r) => r.key === tr.dataset.code);
+  if (row) {
+    location.href = `/stock.html?market=${state.region}&symbol=${encodeURIComponent(symbolOf(row))}` +
+      (state.region === "COIN" ? `&exchange=${row.market}` : "");
+  }
 });
 
 // 드롭다운(업종/컬럼): 바깥 클릭이나 Esc로 닫고, 하나를 열면 다른 하나는 닫는다
