@@ -14,7 +14,8 @@ import numpy as np
 import psycopg
 from pgvector.psycopg import register_vector
 
-from config import EVIDENCE_CHARS, EVIDENCE_MAX, PG_DSN, SEARCH_CANDIDATES, TABLE_CHARS, TABLE_MAX
+from config import (EVIDENCE_CHARS, EVIDENCE_MAX, KEYWORD_CANDIDATES, PG_DSN, RERANK_URL, SEARCH_CANDIDATES,
+                    TABLE_CHARS, TABLE_MAX)
 
 KST = timezone(timedelta(hours=9))
 _local = threading.local()
@@ -118,19 +119,42 @@ def table_terms(query: str) -> list[str]:
     return out[:4]
 
 
-def table_hits(query: str, vec, where: list[str], args: list) -> list:
-    """표 청크 중 항목명이 많이 들어간 것 (최대 TABLE_MAX개). 행 모양은 벡터 검색 결과와 같게."""
+def keyword_hits(query: str, vec, where: list[str], args: list, *, kind: str | None, limit: int) -> list:
+    """항목명·핵심어가 그대로 들어간 청크 (종목 필터 안에서만 - 전체 300만 청크를 글자로 훑지 않게).
+    행 모양은 벡터 검색 결과와 같게. 핵심어의 절반 이상이 들어간 것만."""
     terms = table_terms(query)
     if not terms:
         return []
     pats = [f"%{t}%" for t in terms]
     hits = " + ".join(["(content LIKE %s)::int"] * len(pats))
-    cond = " AND ".join(where + ["kind = 'table'", "content LIKE ANY(%s)"])
+    cond = " AND ".join(where + ([f"kind = '{kind}'"] if kind else []) + ["content LIKE ANY(%s)"])
     sql = (f"SELECT chunk_id, doc_id, content, published_at, source_type, 1 - (embedding <=> %s) AS score, kind, "
-           f"{hits} AS hits FROM chunk WHERE {cond} ORDER BY hits DESC, embedding <=> %s LIMIT {TABLE_MAX}")
+           f"{hits} AS hits FROM chunk WHERE {cond} ORDER BY hits DESC, embedding <=> %s LIMIT {int(limit)}")
     rows = conn().execute(sql, (vec, *pats, *args, pats, vec)).fetchall()
-    need = max(1, (len(terms) + 1) // 2)              # 항목명의 절반 이상이 들어간 표만
+    need = max(1, (len(terms) + 1) // 2)
     return [r[:7] for r in rows if r[7] >= need]
+
+
+_http = None
+
+
+def rerank(query: str, rows: list, titles: dict) -> list | None:
+    """교차 인코더(bge-reranker-v2-m3, TEI)로 후보를 다시 매긴다. 서버가 없거나 실패하면 None."""
+    global _http
+    if not RERANK_URL or not rows:
+        return None
+    try:
+        import requests
+        _http = _http or requests.Session()
+        texts = [f"{titles.get(r[1], '')}\n{r[2][:1200]}" for r in rows]
+        res = _http.post(f"{RERANK_URL.rstrip('/')}/rerank", json={"query": query, "texts": texts, "truncate": True},
+                         timeout=20)
+        res.raise_for_status()
+        order = sorted(res.json(), key=lambda x: -x["score"])
+        return [rows[o["index"]][:5] + (float(o["score"]), rows[o["index"]][6]) for o in order]
+    except Exception as e:
+        print(f"[rerank] 실패, 벡터 순서 사용: {e!r}", flush=True)
+        return None
 
 
 def search(query: str, *, stocks: list[str] | None = None, since_days: int | None = None,
@@ -153,10 +177,21 @@ def search(query: str, *, stocks: list[str] | None = None, since_days: int | Non
            f"FROM chunk {'WHERE ' + ' AND '.join(where) if where else ''} "
            f"ORDER BY embedding <=> %s LIMIT {SEARCH_CANDIDATES}")
     rows = conn().execute(sql, (vec, *args, vec)).fetchall()
-    # 종목이 정해진 질문: 표에서 항목명이 그대로 들어간 청크를 먼저 (작은 임베딩 모델은 비슷한 숫자 표를 잘 못 가른다)
-    lexical = table_hits(query, vec, where, args) if (stocks and _local.has_kind and source != "news") else []
-    seen = {r[0] for r in lexical}
-    rows = lexical + [r for r in rows if r[0] not in seen]
+    # 종목이 정해진 질문은 핵심어가 그대로 들어간 청크도 후보에 넣는다 (작은 임베딩 모델은 비슷한 숫자 표·
+    # 항목명을 잘 못 가른다). 표는 따로 TABLE_MAX개를 맨 앞에 - 리랭커가 없을 때도 표 질문이 맞게.
+    lexical = []
+    if stocks and _local.has_kind:
+        if source != "news":
+            lexical += keyword_hits(query, vec, where, args, kind="table", limit=TABLE_MAX)
+        lexical += keyword_hits(query, vec, where, args, kind=None, limit=KEYWORD_CANDIDATES)
+    seen, merged = set(), []
+    for r in lexical + rows:
+        if r[0] not in seen:
+            seen.add(r[0]); merged.append(r)
+    rows = merged
+    titles = {d[0]: d[1] for d in conn().execute("SELECT doc_id, title FROM doc WHERE doc_id = ANY(%s)",
+                                                 (list({r[1] for r in rows}),)).fetchall()} if rows else {}
+    rows = rerank(query, rows, titles) or rows
 
     # 문서당 최대 2개 - 한 기사에 근거가 쏠리지 않게. 공시 표 청크는 전체에서 TABLE_MAX개까지
     picked, per_doc, tables = [], {}, 0

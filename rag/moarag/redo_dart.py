@@ -37,13 +37,7 @@ DELTA_DIR = DATA_DIR / "delta"
 
 
 def _prepare(con):
-    con.execute("CREATE TABLE IF NOT EXISTS dart_zip (rcept_no TEXT PRIMARY KEY, data BLOB, fetched_at TEXT)")
-    cols = {r[1] for r in con.execute("PRAGMA table_info(dart_filing)")}
-    if "body_v" not in cols:
-        con.execute("ALTER TABLE dart_filing ADD COLUMN body_v INTEGER DEFAULT 1")
-    if "applied_v" not in cols:                    # 서버 DB에 반영한 본문 버전
-        con.execute("ALTER TABLE dart_filing ADD COLUMN applied_v INTEGER DEFAULT 1")
-    con.commit()
+    """(rawdb.connect 가 dart_zip 표와 body_v·applied_v 열을 만든다)"""
 
 
 def zip_to_body(rno: str, data: bytes) -> str:

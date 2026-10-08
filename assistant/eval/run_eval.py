@@ -64,6 +64,12 @@ def run_one(q):
     res = {"id": q["id"], "kind": q["kind"], "question": q["question"], "route": route,
            "route_ok": route == q["expect"]["route"], "ms": round(ms), "answer": answer,
            "evidence": out["evidence"], "checks": out["checks"], "plan": out["plan"]}
+    tools_want = q["expect"].get("tools")
+    if tools_want:                      # 에이전트 도구 선택: 기대한 도구를 모두 골랐고, 그 도구 결과가 근거에 있는지
+        chosen = (out["plan"] or {}).get("tools") or []
+        res["tools_ok"] = all(t in chosen for t in tools_want)
+        res["tool_evidence"] = any(e.get("type") == "data" or "관계 그래프" in (e.get("publisher") or "")
+                                   for e in out["evidence"])
     want = q["expect"].get("doc_id")
     if want:
         rno = want.split(":", 1)[1]
@@ -93,6 +99,8 @@ def summarize(rs):
         "dart_hit@evidence": rate(r["hit"] for r in rs if "hit" in r),
         "dart_hit_cited": rate(r["hit_cited"] for r in rs if "hit" in r),
         "dart_hit_equivalent": rate(r.get("hit_equiv", r["hit"]) for r in rs if "hit" in r),
+        "tool_choice_accuracy": rate(r["tools_ok"] for r in rs if "tools_ok" in r),
+        "tool_evidence_rate": rate(r["tool_evidence"] for r in rs if "tool_evidence" in r),
         "answers_with_citation": rate(r["checks"].get("has_citation", False) for r in ans),
         "answers_with_invalid_citation": sum(1 for r in ans if r["checks"].get("invalid_citations")),
         "number_support_rate": round(sup / nums, 3) if nums else None,

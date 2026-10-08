@@ -6,6 +6,7 @@
   python -m moarag.apply_delta embed       # delta 청크 임베딩(MOARAG_EMBED_URL) → chunk_new  (끊겨도 이어서)
   python -m moarag.apply_delta index [--mem 8GB] [--workers 3]   # chunk_new 인덱스
   python -m moarag.apply_delta swap        # 문서 본문 갱신 + chunk ↔ chunk_new 교체 + 옛 표 삭제
+  python -m moarag.apply_delta inplace     # 작은 delta(수시공시 등): 문서마다 옛 청크 지우고 새 청크 넣기 (인덱스 유지)
 
 delta 파일 위치: $MOARAG_DATA_DIR/delta/{docs,chunks}.parquet
 """
@@ -14,6 +15,7 @@ from __future__ import annotations
 import argparse
 import time
 import uuid
+from collections import defaultdict
 
 import numpy as np
 import psycopg
@@ -147,6 +149,49 @@ def swap():
     print("교체 완료", flush=True)
 
 
+def inplace(block_docs: int, batch: int):
+    """문서 묶음마다 한 트랜잭션: 본문 갱신 → 옛 청크 삭제 → 새 청크 임베딩·삽입. 끊겨도 이어서(처리한 문서는 건너뜀)."""
+    con = _con()
+    con.execute("ALTER TABLE chunk ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'text'")
+    docs = pq.read_table(DELTA / "docs.parquet", columns=["doc_id", "text", "content_sha1"]).to_pylist()
+    chunks = defaultdict(list)
+    cols = ["chunk_id", "doc_id", "chunk_index", "char_start", "char_end", "n_tokens", "text", "title",
+            "source_type", "published_at", "stock_codes", "kind"]
+    for r in pq.read_table(DELTA / "chunks.parquet", columns=cols).to_pylist():
+        chunks[r["doc_id"]].append(r)
+    # 이미 반영한 문서: 본문 해시가 delta 와 같은 문서
+    done = {r[0] for r in con.execute("SELECT doc_id FROM doc WHERE (doc_id, content_sha1) IN "
+                                      "(SELECT * FROM unnest(%s::text[], %s::text[]))",
+                                      ([d["doc_id"] for d in docs], [d["content_sha1"] for d in docs])).fetchall()}
+    todo = [d for d in docs if d["doc_id"] not in done]
+    enc = make_encoder()
+    with Stage("apply_inplace", docs=len(todo), skipped=len(done)) as st:
+        prog = Progress("문서 교체", total=len(todo), every=60)
+        for i in range(0, len(todo), block_docs):
+            part = todo[i:i + block_docs]
+            rows = [c for d in part for c in chunks[d["doc_id"]]]
+            vecs = enc.encode(passage_texts(pa.Table.from_pylist(rows)), batch) if rows else []
+            ids = [d["doc_id"] for d in part]
+            with con.transaction():
+                con.execute("DELETE FROM chunk WHERE doc_id = ANY(%s)", (ids,))
+                for d in part:
+                    con.execute("UPDATE doc SET body = %s, content_sha1 = %s WHERE doc_id = %s",
+                                (d["text"], d["content_sha1"], d["doc_id"]))
+                if rows:
+                    with con.cursor().copy(f"COPY chunk ({','.join(COLS)}) FROM STDIN WITH (FORMAT BINARY)") as cp:
+                        cp.set_types(["uuid", "text", "int4", "int4", "int4", "int4", "text", "text", "timestamptz",
+                                      "text[]", "vector", "text"])
+                        for r, v in zip(rows, vecs):
+                            cp.write_row([uuid.UUID(r["chunk_id"]), r["doc_id"], r["chunk_index"], r["char_start"],
+                                          r["char_end"], r["n_tokens"], r["text"], r["source_type"],
+                                          _ts(r["published_at"]), r["stock_codes"] or [],
+                                          np.asarray(v, dtype=np.float32), r["kind"] or "text"])
+            st.add(docs=len(part), chunks=len(rows))
+            prog.tick(len(part))
+        con.execute("VACUUM ANALYZE chunk")
+    print(f"교체 {len(todo):,}건 (이미 반영 {len(done):,}건)", flush=True)
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -158,9 +203,14 @@ if __name__ == "__main__":
     i.add_argument("--mem", default="1GB")
     i.add_argument("--workers", type=int, default=0)
     sub.add_parser("swap")
+    ip = sub.add_parser("inplace")
+    ip.add_argument("--block-docs", type=int, default=300)
+    ip.add_argument("--batch", type=int, default=128)
     a = ap.parse_args()
     {"prepare": prepare, "swap": swap}.get(a.cmd, lambda: None)()
     if a.cmd == "embed":
         embed(a.block, a.batch)
     elif a.cmd == "index":
         index(a.mem, a.workers)
+    elif a.cmd == "inplace":
+        inplace(a.block_docs, a.batch)

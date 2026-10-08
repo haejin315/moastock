@@ -3,12 +3,13 @@
 #
 #   llm        Qwen3.5 4B, vLLM (OpenAI 호환 API)          :8000
 #   embed      multilingual-e5-small, TEI (임베딩 API)      :8081
+#   rerank     bge-reranker-v2-m3, TEI (검색 후보 다시 매기기) :8082
 #   db         PostgreSQL 18 + pgvector (뉴스·공시 청크)     :5432
 #   assistant  LangGraph 오케스트레이터 (FastAPI, SSE)       :8100
 #   tunnel     cloudflared (TUNNEL_TOKEN 이 있을 때)
 #
 # VM: n1-highmem-2 (2코어, 13GB) + T4 1장, 스팟. 매일 15~22시만 켠다 (인스턴스 일정 moastock-ai-hours)
-# GPU 메모리(T4 16GB): vLLM 0.80(모델 ~8.7GB + 문맥 캐시) + TEI ~1GB
+# GPU 메모리(T4 16GB): vLLM 0.74(모델 ~8.7GB + 문맥 캐시) + 임베딩 ~0.7GB + 리랭커 ~1.5GB
 x-gpu: &gpu
   deploy:
     resources:
@@ -26,7 +27,7 @@ services:
     # T4는 BF16이 없어 FP16(half). 이미지 입력은 쓰지 않으므로 언어 모델 부분만 올린다.
     command: >
       --model Qwen/Qwen3.5-4B --served-model-name qwen3.5-4b
-      --dtype half --max-model-len 16384 --gpu-memory-utilization 0.80
+      --dtype half --max-model-len 16384 --gpu-memory-utilization 0.74
       --max-num-seqs 16 --language-model-only
     healthcheck:
       test: ["CMD", "curl", "-fs", "http://127.0.0.1:8000/health"]
@@ -43,6 +44,16 @@ services:
       --model-id intfloat/multilingual-e5-small
       --max-client-batch-size 256 --max-batch-tokens 65536
 
+  rerank:
+    image: ghcr.io/huggingface/text-embeddings-inference:turing-1.9.4
+    <<: *gpu
+    restart: always
+    volumes: [/data/hf-tei:/data]
+    ports: ["127.0.0.1:8082:80"]
+    command: >
+      --model-id BAAI/bge-reranker-v2-m3
+      --max-client-batch-size 64 --max-batch-tokens 32768
+
   db:
     image: pgvector/pgvector:0.8.1-pg18
     restart: always
@@ -58,11 +69,13 @@ services:
   assistant:
     build: { context: ../.., dockerfile: deploy/gcp/Dockerfile.assistant }
     restart: always
-    depends_on: [db, embed]
+    depends_on: [db, embed, rerank]
     environment:
       ASSIST_LLM_BASE_URL: http://llm:8000/v1
       ASSIST_PG_DSN: postgresql://moarag:moarag@db:5432/moarag
       MOARAG_EMBED_URL: http://embed:80
+      ASSIST_RERANK_URL: http://rerank:80
+      DART_API_KEY: ${DART_API_KEY:-}     # 매일 증분 수집(moarag.daily)용
       MOARAG_DATA_DIR: /data/rag          # 남은 청크 덧붙이기(moarag.backfill)용 파일
       MOARAG_PG_DSN: postgresql://moarag:moarag@db:5432/moarag
       ASSIST_SHARED_SECRET: ${ASSIST_SHARED_SECRET:?ASSIST_SHARED_SECRET 를 .env 에 넣으세요}

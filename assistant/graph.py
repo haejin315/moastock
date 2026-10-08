@@ -1,8 +1,11 @@
-"""AI 비서 흐름 (LangGraph). 흐름은 코드가 쥐고, 모델은 '질문 해석'과 '근거로 문장 쓰기'만 한다.
+"""AI 비서 흐름 (LangGraph). 흐름은 코드가 쥐고, 모델은 '질문 해석·도구 고르기'와 '근거로 문장 쓰기'를 한다.
 
-  understand ─▶ route ─┬─▶ retrieve ─▶ answer ─▶ verify ─▶ END
-                       ├─▶ refuse  (매수·매도 권유 요청)        ─▶ END
+  understand ─▶ route ─┬─▶ gather ─▶ answer ─▶ verify ─▶ END
+   (도구 계획)          ├─▶ refuse  (매수·매도 권유 요청)        ─▶ END
                        └─▶ scope   (주식·경제와 무관한 질문)    ─▶ END
+
+gather: 계획한 도구들을 함께 실행한다 - docs(뉴스·공시 검색), quote(시세), fundamentals(투자 지표),
+price_history(기간 주가), screen(조건 검색), relations(회사 관계 그래프). 결과는 모두 [번호] 근거가 된다.
 
 스트리밍: 각 노드는 get_stream_writer()로 진행 상황·답변 토큰·출처를 흘려보낸다
 (graph.stream(..., stream_mode="custom")).
@@ -19,7 +22,10 @@ from langgraph.graph import END, StateGraph
 
 import llm
 from config import ANSWER_MAX_TOKENS, DEFAULT_DAYS, DISCLAIMER, ROOT
+
+EVIDENCE_TOTAL = 8                    # 도구 결과 + 문서 근거를 합친 최대 개수
 from retrieval import KST, Evidence, resolve_stocks, search
+import tools
 
 STOCK_NAMES = {s["code"]: s["name"] for s in json.loads(
     (ROOT / "public" / "data" / "snapshot.json").read_text(encoding="utf-8"))["stocks"]}
@@ -34,6 +40,7 @@ class State(TypedDict, total=False):
     query: str
     source: str
     advice: bool
+    plan: list[dict]                 # [{"tool": "quote", "args": {...}}, ...]
     evidence: list[Evidence]
     notes: list[str]
     answer: str
@@ -73,13 +80,64 @@ def parse_days(q: str) -> int | None:
     return None
 
 
-UNDERSTAND_SYS = """너는 주식 정보 서비스의 질문 분류기다. 사용자의 질문을 보고 JSON 하나만 출력한다.
+UNDERSTAND_SYS = """너는 주식 정보 서비스의 질문 분석기다. 사용자의 질문을 보고 JSON 하나만 출력한다.
 필드:
-- intent: "실적" | "공시" | "이슈" | "시황" | "비교" | "일반" | "범위밖" 중 하나 (주식·경제·기업과 무관하면 "범위밖")
-- advice: 특정 종목을 사라/팔라/오를까 같은 매매 판단·추천을 요구하면 true, 아니면 false
-- source: 공시 위주 질문이면 "dart", 뉴스·이슈 위주면 "news", 둘 다면 "any"
-- query: 검색에 쓸 짧은 한국어 문장 (회사명과 핵심 주제를 포함, 20자 안팎)
+- intent: "실적" | "공시" | "이슈" | "시황" | "비교" | "시세" | "지표" | "검색" | "관계" | "일반" | "범위밖" 중 하나
+  (주식·경제·기업과 무관하면 "범위밖")
+- advice: 특정 종목을 사라/팔라/오를까 같은 매매 판단·추천을 요구하면 true. 지표 조건으로 종목을 찾는 것은 false
+- source: 공시 위주면 "dart", 뉴스·이슈 위주면 "news", 둘 다면 "any"
+- query: 문서 검색에 쓸 짧은 한국어 문장 (회사명과 핵심 주제, 20자 안팎)
+- tools: 필요한 도구 이름 목록 (여러 개 가능)
+  "docs" 뉴스·공시 문서 검색 / "quote" 지금 주가 / "fundamentals" PER·PBR·시가총액·배당수익률 등 지표 /
+  "price_history" 최근 N일 주가 흐름·수익률 / "screen" 조건으로 종목 찾기 / "relations" 최대주주·종속회사·계열회사·임원
+- days: price_history 기간(일). 없으면 null
+- screen: screen 을 고른 경우만 {"industry": 업종 단어 또는 null, "filters": [{"field": "per|pbr|dividendYield|marketCap|foreignRate|change", "op": "<=|>=", "value": 숫자}], "sort": 필드, "order": "asc|desc", "market": "KOSPI|KOSDAQ" 또는 null}
+  (marketCap 은 원 단위 숫자, dividendYield·foreignRate·change 는 % 숫자)
+- relation: relations 를 고른 경우 "최대주주" | "종속회사" | "계열회사" | "임원" | null
 JSON 외의 말은 쓰지 않는다."""
+
+# 모델이 도구를 빠뜨려도 질문에 명백한 신호가 있으면 붙인다 (작은 모델 보강)
+TOOL_RULES = [
+    ("quote", r"주가|시세|현재가|얼마에|지금\s*가격|종가"),
+    ("fundamentals", r"PER|PBR|EPS|BPS|per|pbr|배당수익률|시가총액|시총|외국인\s*(보유|지분)|52주|밸류|주가수익비율|주가순자산"),
+    ("price_history", r"수익률|올랐|내렸|떨어졌|상승률|하락률|추이|흐름|최고가|최저가"),
+    ("docs", r"뉴스|공시|소식|이슈|기사|발표|보도"),
+    ("relations", r"최대주주|대주주|자회사|종속회사|계열사|계열회사|임원|사내이사|사외이사|대표이사|지분\s*구조"),
+]
+SCREEN_RULE = (r"(종목|회사|기업).{0,12}(찾아|골라|목록|리스트|순위|어디|뭐|있어)"
+               r"|(이하|이상|미만|초과|높은|낮은|상위|하위).{0,8}(종목|회사|기업)")
+TOOLS = {"docs", "quote", "fundamentals", "price_history", "screen", "relations"}
+PER_STOCK = ("quote", "fundamentals", "price_history", "relations")
+
+
+def make_plan(q: str, j: dict, stocks: list[str], intent: str) -> list[dict]:
+    chosen = [t for t in (j.get("tools") or []) if t in TOOLS]
+    for name, pat in TOOL_RULES:
+        if re.search(pat, q) and name not in chosen:
+            chosen.append(name)
+    if re.search(SCREEN_RULE, q) and not stocks and "screen" not in chosen:
+        chosen.append("screen")
+    if not stocks:                                       # 종목별 도구는 종목이 있어야 한다
+        chosen = [t for t in chosen if t not in PER_STOCK]
+    if stocks:
+        chosen = [t for t in chosen if t != "screen"]
+    if not chosen or (intent in ("실적", "공시", "이슈", "시황", "비교") and "docs" not in chosen):
+        chosen.append("docs")
+    plan = []
+    for t in dict.fromkeys(chosen):
+        args = {}
+        if t == "price_history":
+            args["days"] = j.get("days") or parse_days(q) or 30
+        elif t == "screen":
+            sc = j.get("screen") if isinstance(j.get("screen"), dict) else {}
+            market = sc.get("market") if sc.get("market") in ("KOSPI", "KOSDAQ") else None
+            market = "KOSPI" if "코스피" in q else "KOSDAQ" if "코스닥" in q else market
+            args = {"industry": sc.get("industry"), "filters": sc.get("filters") or [], "sort": sc.get("sort"),
+                    "order": sc.get("order") or "desc", "market": market}
+        elif t == "relations":
+            args["relation"] = j.get("relation")
+        plan.append({"tool": t, "args": args})
+    return plan
 
 
 def understand(state: State) -> State:
@@ -89,17 +147,23 @@ def understand(state: State) -> State:
     stocks = resolve_stocks(q)[:3]
     days = parse_days(q)
     period = parse_month(q)
-    j = llm.complete_json([{"role": "system", "content": UNDERSTAND_SYS}, {"role": "user", "content": q}])
-    intent = j.get("intent") if j.get("intent") in {"실적", "공시", "이슈", "시황", "비교", "일반", "범위밖"} else "일반"
+    j = llm.complete_json([{"role": "system", "content": UNDERSTAND_SYS}, {"role": "user", "content": q}],
+                          max_tokens=400)
+    intents = {"실적", "공시", "이슈", "시황", "비교", "시세", "지표", "검색", "관계", "일반", "범위밖"}
+    intent = j.get("intent") if j.get("intent") in intents else "일반"
     source = j.get("source") if j.get("source") in {"news", "dart", "any"} else "any"
     query = str(j.get("query") or q)[:80]
-    # 규칙 보강: 모델이 놓쳐도 명백한 매매 권유 요청은 거른다
-    advice = bool(j.get("advice")) or bool(re.search(r"(사도|팔아도|매수해도|매도해도|살까|팔까|사야|팔아야|들어가도|물타기|손절)\s*(될까|돼|할까|하나|해|요)?", q))
+    plan = make_plan(q, j, stocks, intent)
+    # 규칙 보강: 모델이 놓쳐도 명백한 매매 권유 요청은 거른다. 지표 조건으로 종목을 찾는 것은 권유가 아니다
+    advice = bool(re.search(r"(사도|팔아도|매수해도|매도해도|살까|팔까|사야|팔아야|들어가도|물타기|손절)\s*(될까|돼|할까|하나|해|요)?", q))
+    if j.get("advice") and not any(p["tool"] == "screen" and p["args"].get("filters") for p in plan):
+        advice = True
     names = [STOCK_NAMES.get(c, c) for c in stocks]
     w({"type": "plan", "intent": intent, "stocks": names, "days": days or DEFAULT_DAYS, "query": query,
-       "period": [d.strftime("%Y-%m-%d") for d in period] if period else None})
+       "period": [d.strftime("%Y-%m-%d") for d in period] if period else None,
+       "tools": [p["tool"] for p in plan]})
     return {"stocks": stocks, "days": days, "period": period, "intent": intent, "query": query, "source": source,
-            "advice": advice, "notes": []}
+            "advice": advice, "plan": plan, "notes": []}
 
 
 def route(state: State) -> str:
@@ -107,7 +171,7 @@ def route(state: State) -> str:
         return "refuse"
     if state.get("intent") == "범위밖":
         return "scope"
-    return "retrieve"
+    return "gather"
 
 
 # ---- 2. 거절·범위 밖 -----------------------------------------------------------------
@@ -126,14 +190,17 @@ def scope(state: State) -> State:
     return {"answer": text, "evidence": [], "checks": {"out_of_scope": True}}
 
 
-# ---- 3. 근거 검색 ---------------------------------------------------------------------
+# ---- 3. 근거 모으기 (도구 실행) ----------------------------------------------------------
 
-def retrieve(state: State) -> State:
-    w = get_stream_writer()
-    w({"type": "status", "text": "관련 뉴스·공시를 찾는 중"})
+TOOL_STATUS = {"docs": "관련 뉴스·공시를 찾는 중", "quote": "시세를 확인하는 중", "fundamentals": "투자 지표를 확인하는 중",
+               "price_history": "주가 흐름을 확인하는 중", "screen": "조건에 맞는 종목을 찾는 중",
+               "relations": "회사 관계를 확인하는 중"}
+
+
+def find_docs(state: State) -> tuple[list[Evidence], list[str]]:
     stocks, days = state.get("stocks") or None, state.get("days") or DEFAULT_DAYS
     source = None if state.get("source") == "any" else state.get("source")
-    notes = list(state.get("notes") or [])
+    notes = []
     q = state.get("query") or state["question"]
     period = state.get("period")
     ev = search(q, stocks=stocks, since_days=days, period=period, source=source)
@@ -144,6 +211,54 @@ def retrieve(state: State) -> State:
         ev = search(q, stocks=stocks, since_days=days); notes.append("말씀하신 달에서 찾지 못해 최근 기간으로 넓혔습니다")
     if len(ev) < 2 and days:
         ev = search(q, stocks=stocks, since_days=None); notes.append("기간 조건을 넓혀 찾았습니다")
+    return ev, notes
+
+
+def run_tool(step: dict, state: State) -> tuple[list[Evidence], list[str]]:
+    t, args, stocks = step["tool"], step["args"], state.get("stocks") or []
+    if t == "docs":
+        return find_docs(state)
+    if t == "quote":
+        return tools.quote(stocks), []
+    if t == "fundamentals":
+        return tools.fundamentals(stocks), []
+    if t == "price_history":
+        return tools.price_history(stocks, args.get("days") or 30), []
+    if t == "screen":
+        return tools.screen(**args), []
+    if t == "relations":
+        import kg
+        return kg.relations(stocks, args.get("relation")), []
+    return [], []
+
+
+def gather(state: State) -> State:
+    """계획한 도구를 함께 실행하고 결과를 하나의 근거 목록([1]…)으로 합친다. 실패한 도구는 알리고 넘어간다."""
+    from concurrent.futures import ThreadPoolExecutor
+    w = get_stream_writer()
+    plan = state.get("plan") or [{"tool": "docs", "args": {}}]
+    for step in plan:
+        w({"type": "status", "text": TOOL_STATUS.get(step["tool"], "자료를 모으는 중")})
+    notes = list(state.get("notes") or [])
+    results = {}
+    with ThreadPoolExecutor(max_workers=len(plan)) as pool:
+        futs = {step["tool"]: pool.submit(run_tool, step, state) for step in plan}
+        for name, f in futs.items():
+            try:
+                results[name] = f.result(timeout=60)
+            except Exception as e:                       # 도구 하나가 실패해도 나머지로 답한다
+                print(f"[tool] {name} 실패: {e!r}", flush=True)
+                results[name] = ([], [f"{name} 자료를 가져오지 못해 그 자료 없이 답했습니다"])
+    ev = []
+    for step in plan:                                    # 데이터 도구 → 문서 순으로 번호를 매긴다
+        if step["tool"] != "docs":
+            ev += results[step["tool"]][0]
+            notes += results[step["tool"]][1]
+    if "docs" in results:
+        ev += results["docs"][0][:max(2, EVIDENCE_TOTAL - len(ev))]
+        notes += results["docs"][1]
+    for i, e in enumerate(ev, 1):
+        e.n = i
     w({"type": "evidence", "items": [e.citation() for e in ev]})
     return {"evidence": ev, "notes": notes}
 
@@ -162,6 +277,9 @@ ANSWER_SYS = """너는 모아스톡의 AI 비서다. 아래 [근거]만 사용�
    값을 옮길 때는 행 이름과 열 이름(기간 등)을 함께 밝히고, 단위는 표의 '(단위 : …)'를 그대로 붙인다.
    표 제목에 '연결' 또는 '별도'가 있으면 반드시 "연결 기준"/"별도 기준"을 밝히고, 두 기준의 값을 섞지 않는다.
    예: "제58기 반기 현금배당금총액은 4,909,211백만원이다[2]." "연결 기준 2026년 6월말 현금및현금성자산은 92,916,382백만원이다[1]."
+7. (모아스톡 데이터: 시세·지표·주가 흐름·조건 검색·회사 관계) 근거에 적힌 기준 시각·기준일을 함께 밝힌다.
+   예: "10월 8일 11시 2분 기준 삼성전자 현재가는 268,500원이다[1]." 지표나 등락을 근거로 사라·팔라는 판단은 하지 않는다.
+   조건 검색 결과는 '조건에 맞는 종목 목록'이라고 소개하고, 추천이라고 표현하지 않는다.
 형식 예시: "8월 10일 공시에 따르면 회사는 50억원 규모의 전환사채 발행을 결정했다[1]. 전환가액은 1주당 3,200원이다[1]."
 인용 번호 없이 끝나는 문장은 쓰지 않는다."""
 
@@ -191,6 +309,10 @@ def evidence_block(ev: list[Evidence]) -> str:
     out = []
     for e in ev:
         date = e.published_at.strftime("%Y-%m-%d") if e.published_at else "날짜 미상"
+        if e.kind == "data":             # 도구 결과 (시세·지표 등)
+            when = f", {e.published_at:%Y-%m-%d %H:%M} 기준" if e.published_at else ""
+            out.append(f"[{e.n}] (모아스톡 데이터{when}) {e.title}\n{e.text}")
+            continue
         if e.kind == "table":            # 표는 단위가 '(단위 : 백만원)' 등으로 따로 있어 원 단위 환산을 붙이지 않는다
             out.append(f"[{e.n}] (공시 표, {date}, {e.publisher or '-'}) {e.title}\n{e.text}")
             continue
@@ -203,7 +325,7 @@ def answer(state: State) -> State:
     w = get_stream_writer()
     ev = state.get("evidence") or []
     if not ev:
-        text = "질문과 관련된 뉴스·공시를 수집된 자료에서 찾지 못했습니다. 종목명이나 기간을 바꿔 다시 물어봐 주세요."
+        text = "질문과 관련된 자료를 찾지 못했습니다. 종목명이나 기간·조건을 바꿔 다시 물어봐 주세요."
         w({"type": "token", "text": text})
         return {"answer": text}
     w({"type": "status", "text": "근거를 바탕으로 답변을 쓰는 중"})
@@ -288,12 +410,12 @@ def verify(state: State) -> State:
 
 def build():
     g = StateGraph(State)
-    for name, fn in [("understand", understand), ("retrieve", retrieve), ("answer", answer),
+    for name, fn in [("understand", understand), ("gather", gather), ("answer", answer),
                      ("verify", verify), ("refuse", refuse), ("scope", scope)]:
         g.add_node(name, fn)
     g.set_entry_point("understand")
-    g.add_conditional_edges("understand", route, {"retrieve": "retrieve", "refuse": "refuse", "scope": "scope"})
-    g.add_edge("retrieve", "answer")
+    g.add_conditional_edges("understand", route, {"gather": "gather", "refuse": "refuse", "scope": "scope"})
+    g.add_edge("gather", "answer")
     g.add_edge("answer", "verify")
     g.add_edge("verify", END)
     for n in ("refuse", "scope"):

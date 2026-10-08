@@ -19,7 +19,7 @@ import re
 import zipfile
 from datetime import datetime, timedelta
 
-from .config import DART_API_KEY, KST, NOW_KST, SINCE_KST
+from .config import DART_API_KEY, KST, SINCE_KST
 from .http import Fetcher
 from .metrics import Progress, Stage
 from .rawdb import connect
@@ -56,12 +56,14 @@ def month_windows(start: datetime, end: datetime):
         cur = nxt + timedelta(days=1)
 
 
-async def collect_list():
+async def collect_list(since: datetime | None = None):
+    """since 를 주면 (매일 증분) 그날부터 오늘까지만."""
     need_key()
     con = connect()
-    with Stage("dart_list", since=SINCE_KST.date().isoformat()) as st:
+    since = since or SINCE_KST
+    with Stage("dart_list", since=since.date().isoformat()) as st:
         async with Fetcher(rps=5, concurrency=4) as f:
-            for bgn, end in month_windows(SINCE_KST, NOW_KST):
+            for bgn, end in month_windows(since, datetime.now(KST)):
                 for cls in ("Y", "K"):
                     page, total_page = 1, 1
                     while page <= total_page:
@@ -278,9 +280,11 @@ async def collect_docs(limit: int | None, rps: float):
                             parts = [dart_xml_to_text(decode(zf.read(n))) for n in names]
                             body = "\n\n".join(p for p in parts if p)
                             con.execute(
-                                "UPDATE dart_filing SET status=?, fetched_at=?, doc_files=?, doc_bytes=?, body=? "
-                                "WHERE rcept_no=?",
+                                "UPDATE dart_filing SET status=?, fetched_at=?, doc_files=?, doc_bytes=?, body=?, "
+                                "body_v=2 WHERE rcept_no=?",
                                 ("ok" if body else "empty", now, len(names), len(data), body or None, rno))
+                            con.execute("INSERT OR REPLACE INTO dart_zip (rcept_no, data, fetched_at) VALUES (?,?,?)",
+                                        (rno, data, now))
                             st.add(ok=1, zip_bytes=len(data), body_chars=len(body))
                     except QuotaExceeded:
                         st.set(stopped="quota_exceeded")

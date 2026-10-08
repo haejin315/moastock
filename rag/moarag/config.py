@@ -40,7 +40,8 @@ DOCS_PATH = DATA_DIR / "docs.parquet"
 EMB_PATH = DATA_DIR / "embeddings.f32.npy"
 METRICS_PATH = DATA_DIR / "metrics.jsonl"
 BENCH_DIR = DATA_DIR / "bench"
-SNAPSHOT = REPO / "public" / "data" / "snapshot.json"
+# 종목 목록: 매일 증분(daily)이 받아 둔 최신본이 있으면 그것, 없으면 저장소의 것
+SNAPSHOT = DATA_DIR / "snapshot.json" if (DATA_DIR / "snapshot.json").exists() else REPO / "public" / "data" / "snapshot.json"
 
 # 수집 기간: 오늘(KST) 기준 과거 N일
 WINDOW_DAYS = int(os.environ.get("MOARAG_WINDOW_DAYS", "183"))

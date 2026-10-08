@@ -3,7 +3,8 @@
 FROM python:3.12-slim
 WORKDIR /app
 COPY assistant/requirements.txt assistant/requirements.txt
-RUN pip install --no-cache-dir -r assistant/requirements.txt requests pyarrow
+# requests·pyarrow: 임베딩 서버·delta 파일 / aiohttp·selectolax·datasketch: 매일 증분 수집(moarag.daily)
+RUN pip install --no-cache-dir -r assistant/requirements.txt requests pyarrow aiohttp selectolax "datasketch>=2.0"
 COPY assistant/ assistant/
 COPY rag/moarag/ rag/moarag/
 COPY public/data/snapshot.json public/data/snapshot.json

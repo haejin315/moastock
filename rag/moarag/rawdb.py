@@ -58,12 +58,27 @@ CREATE TABLE IF NOT EXISTS dart_filing (
 CREATE INDEX IF NOT EXISTS dart_status ON dart_filing(status);
 
 CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT);
+
+-- 공시 원본 ZIP (다시 받지 않고 재가공할 수 있게)
+CREATE TABLE IF NOT EXISTS dart_zip (rcept_no TEXT PRIMARY KEY, data BLOB, fetched_at TEXT);
 """
+
+# 나중에 더한 열: (표, 열, 정의)
+_ADDED = [
+    ("dart_filing", "body_v", "INTEGER DEFAULT 1"),     # 본문 가공 방식 (2 = 표를 행 단위로 편 방식)
+    ("dart_filing", "applied_v", "INTEGER DEFAULT 1"),  # 운영 DB에 반영한 본문 방식
+    ("dart_filing", "loaded_at", "TEXT"),               # 운영 DB에 넣은 시각 (매일 증분용)
+    ("news", "loaded_at", "TEXT"),
+]
 
 
 def connect() -> sqlite3.Connection:
     con = sqlite3.connect(RAW_DB, timeout=60)
     con.executescript(SCHEMA)
+    for table, col, ddl in _ADDED:
+        if col not in {r[1] for r in con.execute(f"PRAGMA table_info({table})")}:
+            con.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
+    con.commit()
     return con
 
 

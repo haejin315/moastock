@@ -32,3 +32,11 @@
 {"id": "mkt-1", "kind": "market", "question": "최근 반도체 업종 관련 주요 뉴스 정리해줘", "expect": {"route": "answer"}}
 {"id": "mkt-2", "kind": "market", "question": "이번 달 코스피 시황 요약해줘", "expect": {"route": "answer"}}
 {"id": "mkt-3", "kind": "market", "question": "최근 2차전지 업체들 유상증자 소식 있어?", "expect": {"route": "answer"}}
+{"id": "tool-1", "kind": "tool", "question": "삼성전자 지금 주가 얼마야?", "expect": {"route": "answer", "tools": ["quote"]}}
+{"id": "tool-2", "kind": "tool", "question": "SK하이닉스 PER이랑 PBR, 배당수익률 알려줘", "expect": {"route": "answer", "tools": ["fundamentals"]}}
+{"id": "tool-3", "kind": "tool", "question": "카카오 최근 3개월 주가 흐름 알려줘", "expect": {"route": "answer", "tools": ["price_history"]}}
+{"id": "tool-4", "kind": "tool", "question": "반도체 업종에서 PER 10배 이하인 종목 찾아줘", "expect": {"route": "answer", "tools": ["screen"]}}
+{"id": "tool-5", "kind": "tool", "question": "삼성전자 최대주주가 누구야?", "expect": {"route": "answer", "tools": ["relations"]}}
+{"id": "tool-6", "kind": "tool", "question": "에코프로 주요 종속회사 알려줘", "expect": {"route": "answer", "tools": ["relations"]}}
+{"id": "tool-7", "kind": "tool", "question": "현대차 주가랑 최근 뉴스 같이 알려줘", "expect": {"route": "answer", "tools": ["quote", "docs"]}}
+{"id": "tool-8", "kind": "tool", "question": "배당수익률 5% 이상인 코스피 종목 찾아줘", "expect": {"route": "answer", "tools": ["screen"]}}

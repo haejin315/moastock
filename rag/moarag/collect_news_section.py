@@ -15,7 +15,7 @@ import json
 import re
 from datetime import datetime, timedelta
 
-from .config import KST, NOW_KST, SINCE_KST
+from .config import KST, SINCE_KST
 from .http import Fetcher
 from .metrics import Progress, Stage
 from .rawdb import connect
@@ -70,17 +70,22 @@ async def crawl_day(f: Fetcher, sid2: str, date: str):
     return items, page
 
 
-async def main(sections: list[str], rps: float, workers: int):
+async def main(sections: list[str], rps: float, workers: int, days_back: int | None = None,
+               matcher: StockMatcher | None = None):
+    """days_back 를 주면 (매일 증분) 오늘부터 그 날수만큼만, 완료 표시와 상관없이 다시 훑는다."""
     con = connect()
-    matcher = StockMatcher()
+    matcher = matcher or StockMatcher()
+    now = datetime.now(KST)
+    first = (now - timedelta(days=days_back)).date() if days_back is not None else SINCE_KST.date()
     days = []
-    d = NOW_KST.date()
-    while d >= SINCE_KST.date():
+    d = now.date()
+    while d >= first:
         days.append(d.strftime("%Y%m%d"))
         d -= timedelta(days=1)
     done = {(s, dt) for s, dt in con.execute("SELECT sid2, date FROM section_day WHERE done_at IS NOT NULL")}
-    today = NOW_KST.strftime("%Y%m%d")
-    todo = [(s, dt) for dt in days for s in sections if (s, dt) not in done or dt == today]
+    today = now.strftime("%Y%m%d")
+    todo = [(s, dt) for dt in days for s in sections
+            if days_back is not None or (s, dt) not in done or dt == today]
 
     with Stage("news_section", sections=sections, days=len(days), todo=len(todo), rps=rps) as st:
         prog = Progress("섹션×날짜", total=len(todo))

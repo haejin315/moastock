@@ -331,6 +331,50 @@ def kst_iso(s: str | None, fmt: str | None = None) -> str | None:
         return None
 
 
+NEWS_SQL = ("SELECT oid,aid,naver_url,title,body,press,reporter,published_at,modified_at,section,original_url,"
+            "fetched_at,list_title,list_office,list_datetime FROM news")
+DART_SQL = ("SELECT rcept_no,corp_code,corp_name,stock_code,corp_cls,report_nm,flr_nm,rcept_dt,rm,body,fetched_at "
+            "FROM dart_filing")
+
+
+def news_doc(row, links: dict, matcher, since_iso: str | None = None):
+    """news 행(NEWS_SQL 순서) → (문서, None) 또는 (None, 버린 이유)"""
+    (oid, aid, naver_url, title, body, press, reporter, pub, mod, section, orig, fetched,
+     list_title, list_office, list_dt) = row
+    published = kst_iso(pub, "%Y-%m-%d %H:%M:%S") or kst_iso(list_dt, "%Y%m%d%H%M")
+    if not published or (since_iso and published < since_iso):
+        return None, "out_of_window"
+    text = clean_news(body)
+    if len(text) < 80:
+        return None, "too_short"
+    doc_id = f"news:{oid}-{aid}"
+    how = dict(links.get(doc_id, {}))
+    for code, m in matcher.match(title or list_title or "", text).items():
+        if code not in how or MATCH_RANK[m] < MATCH_RANK.get(how[code], 9):
+            how[code] = m
+    return dict(
+        doc_id=doc_id, source_type="news", title=(title or list_title or "").strip(), text=text,
+        publisher=press or list_office, author=reporter, published_at=published,
+        modified_at=kst_iso(mod, "%Y-%m-%d %H:%M:%S"), url=naver_url, original_url=orig,
+        section=section, stock_codes=sorted(how), stock_match=how, rcept_no=None, report_nm=None, corp_name=None,
+        crawled_at=fetched), None
+
+
+def dart_doc(row):
+    """dart_filing 행(DART_SQL 순서) → 문서 (본문이 너무 짧으면 None)"""
+    (rno, corp_code, corp_name, stock_code, cls, report_nm, flr_nm, rcept_dt, rm, body, fetched) = row
+    text = clean_dart(body)
+    if len(text) < 80:
+        return None
+    return dict(
+        doc_id=f"dart:{rno}", source_type="dart", title=f"[{corp_name}] {report_nm}", text=text,
+        publisher=flr_nm, author=None, published_at=kst_iso(rcept_dt, "%Y%m%d"), modified_at=None,
+        url=f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={rno}", original_url=None,
+        section=rm or None, stock_codes=[stock_code] if stock_code else [],
+        stock_match={stock_code: "dart_filer"} if stock_code else {}, rcept_no=rno,
+        report_nm=report_nm, corp_name=corp_name, crawled_at=fetched)
+
+
 def main(workers: int):
     con = connect()
     names = dict(con.execute("SELECT code, name FROM stock"))
@@ -343,47 +387,21 @@ def main(workers: int):
         links: dict[str, dict[str, str]] = defaultdict(dict)
         for code, oid, aid, how in con.execute("SELECT code, oid, aid, method FROM news_link"):
             links[f"news:{oid}-{aid}"][code] = how
-        for (oid, aid, naver_url, title, body, press, reporter, pub, mod, section, orig, fetched,
-             list_title, list_office, list_dt) in con.execute(
-                "SELECT oid,aid,naver_url,title,body,press,reporter,published_at,modified_at,section,original_url,"
-                "fetched_at,list_title,list_office,list_datetime FROM news WHERE status='ok'"):
-            st.add(news_in=1, chars_in=len(body))
-            published = kst_iso(pub, "%Y-%m-%d %H:%M:%S") or kst_iso(list_dt, "%Y%m%d%H%M")
-            if not published or published < since_iso:
-                st.add(news_out_of_window=1); continue
-            text = clean_news(body)
-            if len(text) < 80:
-                st.add(news_too_short=1); continue
-            doc_id = f"news:{oid}-{aid}"
-            how = dict(links.get(doc_id, {}))
-            for code, m in matcher.match(title or list_title or "", text).items():
-                if code not in how or MATCH_RANK[m] < MATCH_RANK.get(how[code], 9):
-                    how[code] = m
-            codes = sorted(how)
-            docs[doc_id] = dict(
-                doc_id=doc_id, source_type="news", title=(title or list_title or "").strip(), text=text,
-                publisher=press or list_office, author=reporter, published_at=published,
-                modified_at=kst_iso(mod, "%Y-%m-%d %H:%M:%S"), url=naver_url, original_url=orig,
-                section=section, stock_codes=codes, stock_match=how, rcept_no=None, report_nm=None, corp_name=None,
-                crawled_at=fetched)
-            st.add(news_kept=1, chars_out=len(text))
+        for row in con.execute(NEWS_SQL + " WHERE status='ok'"):
+            st.add(news_in=1, chars_in=len(row[4]))
+            d, why = news_doc(row, links, matcher, since_iso)
+            if d is None:
+                st.add(**{f"news_{why}": 1}); continue
+            docs[d["doc_id"]] = d
+            st.add(news_kept=1, chars_out=len(d["text"]))
 
-        for (rno, corp_code, corp_name, stock_code, cls, report_nm, flr_nm, rcept_dt, rm, body, fetched) in con.execute(
-                "SELECT rcept_no,corp_code,corp_name,stock_code,corp_cls,report_nm,flr_nm,rcept_dt,rm,body,fetched_at "
-                "FROM dart_filing WHERE status='ok'"):
-            st.add(dart_in=1, chars_in=len(body))
-            text = clean_dart(body)
-            if len(text) < 80:
+        for row in con.execute(DART_SQL + " WHERE status='ok'"):
+            st.add(dart_in=1, chars_in=len(row[9]))
+            d = dart_doc(row)
+            if d is None:
                 st.add(dart_too_short=1); continue
-            doc_id = f"dart:{rno}"
-            docs[doc_id] = dict(
-                doc_id=doc_id, source_type="dart", title=f"[{corp_name}] {report_nm}", text=text,
-                publisher=flr_nm, author=None, published_at=kst_iso(rcept_dt, "%Y%m%d"), modified_at=None,
-                url=f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={rno}", original_url=None,
-                section=rm or None, stock_codes=[stock_code] if stock_code else [],
-                stock_match={stock_code: "dart_filer"} if stock_code else {}, rcept_no=rno,
-                report_nm=report_nm, corp_name=corp_name, crawled_at=fetched)
-            st.add(dart_kept=1, chars_out=len(text))
+            docs[d["doc_id"]] = d
+            st.add(dart_kept=1, chars_out=len(d["text"]))
 
     # 2) 중복 제거
     with Stage("process_dedup", docs=len(docs)) as st:
