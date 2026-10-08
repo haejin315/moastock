@@ -91,20 +91,34 @@ async function krwExchange(base, label) {
   return rows;
 }
 
-// 바이낸스 USDT 마켓 (지역 제한 없는 공개 시세 미러) - 원/달러로 원화 환산
-async function binanceRows(usdkrw) {
+// 바이낸스 USDT 마켓 (지역 제한 없는 공개 시세 미러) - 원/달러로 원화 환산.
+// 전 종목 응답은 2MB 가까워 Worker CPU 한도에 걸릴 수 있어, 국내 거래소에도 있는 코인만 100개씩 묻는다
+// (바이낸스에만 있는 코인은 일일 스냅샷 값을 쓴다).
+async function binanceRows(usdkrw, codes) {
+  const headers = { "User-Agent": BROWSER_UA, Accept: "application/json" };
+  // 1) 전 종목 가격만 (가볍다) - 바이낸스에 실제 있는 기호를 고르는 데 쓴다 (없는 기호가 섞이면 묶음 전체가 400)
+  const priceResp = await fetch("https://data-api.binance.vision/api/v3/ticker/price", { headers, cf: { cacheTtl: 30 } });
+  if (!priceResp.ok) throw new Error(`binance ${priceResp.status}`);
+  const listed = new Set((await priceResp.json()).map((t) => t.symbol));
+  const syms = [...codes].map((c) => `${c}USDT`).filter((s) => listed.has(s));
   const rows = [];
-  for (const t of await (await fetchUpstream("https://data-api.binance.vision/api/v3/ticker/24hr")).json()) {
-    if (!t.symbol.endsWith("USDT")) continue;
-    const usd = Number(t.lastPrice);
-    if (!(usd > 0)) continue;
-    const krw = usd * usdkrw;
-    rows.push({
-      exchange: "BINANCE", code: t.symbol.slice(0, -4), priceUsd: usd,
-      price: krw < 100 ? Math.round(krw * 1e4) / 1e4 : Math.round(krw),
-      change: Math.round(Number(t.priceChangePercent) * 100) / 100,
-      volume: Number(t.volume), value: Math.round(Number(t.quoteVolume) * usdkrw),
-    });
+  // 2) 그중 국내 거래소에도 있는 코인만 24시간 통계를 100개씩
+  for (let i = 0; i < syms.length; i += 100) {
+    const q = encodeURIComponent(JSON.stringify(syms.slice(i, i + 100)));
+    const resp = await fetch(`https://data-api.binance.vision/api/v3/ticker/24hr?symbols=${q}&type=MINI`,
+      { headers, cf: { cacheTtl: 30 } });
+    if (!resp.ok) { rows.error = `binance ${resp.status}`; continue; }
+    for (const t of await resp.json()) {
+      const usd = Number(t.lastPrice), open = Number(t.openPrice);
+      if (!(usd > 0)) continue;
+      const krw = usd * usdkrw;
+      rows.push({
+        exchange: "BINANCE", code: t.symbol.slice(0, -4), priceUsd: usd,
+        price: krw < 100 ? Math.round(krw * 1e4) / 1e4 : Math.round(krw),
+        change: open > 0 ? Math.round((usd / open - 1) * 10000) / 100 : null,
+        volume: Number(t.volume), value: Math.round(Number(t.quoteVolume) * usdkrw),
+      });
+    }
   }
   return rows;
 }
@@ -117,19 +131,25 @@ async function usdKrw() {
 
 // 코인: 업비트·빗썸·바이낸스 + 국내 거래소의 김치 프리미엄(바이낸스 원화 환산가 대비 %)
 async function coinQuotes() {
-  const usdkrw = await usdKrw();
-  const [up, bt, bn] = await Promise.all([
+  const errors = {};
+  const usdkrw = await usdKrw().catch((e) => { errors.usdkrw = String(e.message || e); return null; });
+  const [up, bt] = await Promise.all([
     krwExchange("https://api.upbit.com", "UPBIT"),
     krwExchange("https://api.bithumb.com", "BITHUMB"),
-    usdkrw ? binanceRows(usdkrw).catch(() => []) : [],
   ]);
+  let bn = [];
+  if (usdkrw) {
+    bn = await binanceRows(usdkrw, new Set([...up, ...bt].map((r) => r.code)))
+      .catch((e) => { errors.BINANCE = String(e.message || e); return []; });
+    if (bn.error) errors.BINANCE = bn.error;
+  }
   const bnBy = new Map(bn.map((r) => [r.code, r]));
   for (const r of [...up, ...bt]) {
     const b = bnBy.get(r.code);
     if (b && b.priceUsd && usdkrw) r.premium = Math.round((r.price / (b.priceUsd * usdkrw) - 1) * 10000) / 100;
   }
   const quotes = [...up, ...bt, ...bn];
-  return json({ market: "COIN", usdkrw, count: quotes.length, quotes }, { maxAge: CACHE_SEC });
+  return json({ market: "COIN", usdkrw, count: quotes.length, quotes, errors }, { maxAge: CACHE_SEC });
 }
 
 function toNum(text) {

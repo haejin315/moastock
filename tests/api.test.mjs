@@ -194,10 +194,11 @@ test("screener: 코인 - 업비트·빗썸·바이낸스, 바이낸스는 원화
     ["api.upbit.com/v1/ticker", krwTicker(142800000)],
     ["api.bithumb.com/v1/market/all", () => [{ market: "KRW-BTC" }]],
     ["api.bithumb.com/v1/ticker", krwTicker(140000000)],
-    ["data-api.binance.vision", () => [
-      { symbol: "BTCUSDT", lastPrice: "100000", priceChangePercent: "-1.389", volume: "2", quoteVolume: "200000" },
-      { symbol: "ETHBTC", lastPrice: "0.03", priceChangePercent: "0", volume: "1", quoteVolume: "1" },
-    ]],
+    ["binance.vision/api/v3/ticker/price", () => [{ symbol: "BTCUSDT", price: "100000" }, { symbol: "ETHBTC", price: "0.03" }]],
+    ["binance.vision/api/v3/ticker/24hr", (url) => {
+      assert.ok(decodeURIComponent(url).includes('["BTCUSDT"]'), "바이낸스에 있는 기호만 묻는다");
+      return [{ symbol: "BTCUSDT", lastPrice: "100000", openPrice: "101408.45", volume: "2", quoteVolume: "200000" }];
+    }],
   ]);
   const r = await bodyOf(await screener.onRequestGet(ctx("/api/screener?market=COIN")));
   const by = Object.fromEntries(r.data.quotes.map((q) => [`${q.exchange}:${q.code}`, q]));
@@ -207,6 +208,7 @@ test("screener: 코인 - 업비트·빗썸·바이낸스, 바이낸스는 원화
   assert.equal(by["UPBIT:BTC"].premium, 2, "142.8백만 / 140백만 - 1 = 2%");
   assert.equal(by["BITHUMB:BTC"].premium, 0);
   assert.equal(by["UPBIT:BTC"].change, -0.32);
+  assert.equal(by["BINANCE:BTC"].change, -1.39);
   assert.ok(!by["BINANCE:ETH"], "USDT 마켓만");
 });
 
