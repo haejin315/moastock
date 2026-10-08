@@ -50,9 +50,11 @@ services:
     restart: always
     volumes: [/data/hf-tei:/data]
     ports: ["127.0.0.1:8082:80"]
+    # 입력 길이 상한 = max-batch-tokens. T4(플래시 어텐션 없음)는 어텐션 메모리가 길이의 제곱이라
+    # 모델 최대(8192)로 두면 예열에서 메모리가 터진다. 검색 후보는 600토큰 안쪽이라 2048이면 충분.
     command: >
       --model-id BAAI/bge-reranker-v2-m3
-      --max-client-batch-size 64 --max-batch-tokens 32768
+      --max-client-batch-size 64 --max-batch-tokens 2048 --auto-truncate
 
   db:
     image: pgvector/pgvector:0.8.1-pg18
