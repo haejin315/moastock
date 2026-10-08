@@ -182,34 +182,26 @@ test("screener: 미국(나스닥 API) - 기호를 야후 형식으로, $·% 떼�
   assert.equal(by.AAPL.value, Math.round(336.67 * 2000));
 });
 
-test("screener: 코인 - 업비트·빗썸·바이낸스, 바이낸스는 원화 환산, 김치 프리미엄", async () => {
+test("screener: 코인 - 업비트·빗썸 원화마켓과 원/달러 (바이낸스는 브라우저가 직접)", async () => {
   const krwTicker = (price) => (url) => {
     assert.ok(!url.includes("BTC-ETH"), "원화마켓만 조회");
     return [{ market: "KRW-BTC", trade_price: price, signed_change_rate: -0.0032, acc_trade_volume_24h: 10,
               acc_trade_price_24h: 1.5e12 }];
   };
-  mockFetch([
+  const calls = mockFetch([
     ["/v8/finance/chart/KRW%3DX", () => ({ chart: { result: [{ meta: { regularMarketPrice: 1400 } }] } })],
     ["api.upbit.com/v1/market/all", () => [{ market: "KRW-BTC" }, { market: "BTC-ETH" }]],
     ["api.upbit.com/v1/ticker", krwTicker(142800000)],
     ["api.bithumb.com/v1/market/all", () => [{ market: "KRW-BTC" }]],
     ["api.bithumb.com/v1/ticker", krwTicker(140000000)],
-    ["binance.vision/api/v3/ticker/price", () => [{ symbol: "BTCUSDT", price: "100000" }, { symbol: "ETHBTC", price: "0.03" }]],
-    ["binance.vision/api/v3/ticker/24hr", (url) => {
-      assert.ok(decodeURIComponent(url).includes('["BTCUSDT"]'), "바이낸스에 있는 기호만 묻는다");
-      return [{ symbol: "BTCUSDT", lastPrice: "100000", openPrice: "101408.45", volume: "2", quoteVolume: "200000" }];
-    }],
   ]);
   const r = await bodyOf(await screener.onRequestGet(ctx("/api/screener?market=COIN")));
   const by = Object.fromEntries(r.data.quotes.map((q) => [`${q.exchange}:${q.code}`, q]));
   assert.equal(r.data.usdkrw, 1400);
-  assert.equal(by["BINANCE:BTC"].price, 140000000, "100,000달러 × 1,400원");
-  assert.equal(by["BINANCE:BTC"].value, 280000000);
-  assert.equal(by["UPBIT:BTC"].premium, 2, "142.8백만 / 140백만 - 1 = 2%");
-  assert.equal(by["BITHUMB:BTC"].premium, 0);
+  assert.equal(by["UPBIT:BTC"].price, 142800000);
+  assert.equal(by["BITHUMB:BTC"].price, 140000000);
   assert.equal(by["UPBIT:BTC"].change, -0.32);
-  assert.equal(by["BINANCE:BTC"].change, -1.39);
-  assert.ok(!by["BINANCE:ETH"], "USDT 마켓만");
+  assert.ok(!calls.some((u) => u.includes("binance")), "서버에서는 바이낸스를 부르지 않는다");
 });
 
 // ---- /api/chart --------------------------------------------------------------

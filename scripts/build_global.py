@@ -250,7 +250,11 @@ def build_coins() -> dict:
     usdkrw = yahoo_quotes(["KRW=X"])["KRW=X"]["regularMarketPrice"]
     up = korean_exchange("https://api.upbit.com", "UPBIT")
     bt = korean_exchange("https://api.bithumb.com", "BITHUMB")
-    bn = binance(usdkrw)
+    try:
+        bn = binance(usdkrw)
+    except Exception as e:                            # 바이낸스가 수집 서버 지역을 막으면 화면이 브라우저에서 직접 받는다
+        print(f"  바이낸스 실패({e!r}) - 브라우저 실시간으로만 표시", flush=True)
+        bn = {}
     gecko = []
     for page in (1, 2, 3):                            # 시가총액 상위 250
         gecko += get("https://api.coingecko.com/api/v3/coins/markets",

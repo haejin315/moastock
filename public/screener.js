@@ -274,6 +274,35 @@ function renderRegionTabs() {
     `<button data-u="${esc(v)}" class="${v === state.universe ? "active" : ""}">${esc(label)}</button>`).join("");
 }
 
+// 바이낸스: Cloudflare 서버 요청은 막지만(403) 브라우저 요청(CORS)은 허용해 브라우저에서 직접 받는다.
+// 바이낸스 화면이면 24시간 통계(등락률·거래대금)까지, 아니면 김치 프리미엄 계산용 가격 목록(가볍다)만.
+const BINANCE = "https://data-api.binance.vision/api/v3/ticker/";
+const STABLE = new Set(["USDT", "USDC", "FDUSD", "TUSD", "DAI", "BUSD", "USDP", "USDE", "PYUSD", "USD1", "EUR", "TRY", "BRL"]);
+
+async function binanceLive(usdkrw) {
+  const full = state.universe === "BINANCE";
+  const list = await (await fetch(BINANCE + (full ? "24hr?type=MINI" : "price"))).json();
+  const out = new Map();
+  for (const t of list) {
+    if (!t.symbol.endsWith("USDT")) continue;
+    const code = t.symbol.slice(0, -4);
+    if (STABLE.has(code) || /(UP|DOWN|BULL|BEAR)$/.test(code)) continue;
+    const usd = Number(full ? t.lastPrice : t.price);
+    if (!(usd > 0)) continue;
+    const krw = usd * usdkrw;
+    const q = { exchange: "BINANCE", code, priceUsd: usd, price: krw < 100 ? Math.round(krw * 1e4) / 1e4 : Math.round(krw) };
+    if (full) {
+      if (!(Number(t.quoteVolume) > 0)) continue;
+      const open = Number(t.openPrice);
+      q.change = open > 0 ? Math.round((usd / open - 1) * 10000) / 100 : null;
+      q.volume = Number(t.volume);
+      q.value = Math.round(Number(t.quoteVolume) * usdkrw);
+    }
+    out.set(code, q);
+  }
+  return out;
+}
+
 async function refreshLive() {
   const region = state.region;
   const markets = REGIONS[region].live;
@@ -286,6 +315,29 @@ async function refreshLive() {
     const live = new Map();
     for (const body of results) {
       for (const q of body.quotes || []) live.set(region === "COIN" ? `${q.exchange}:${q.code}` : q.code, q);
+    }
+    if (region === "COIN" && results[0]?.usdkrw) {
+      const bn = await binanceLive(results[0].usdkrw).catch(() => null);
+      if (bn && region === state.region) {
+        for (const [code, q] of bn) live.set(`BINANCE:${code}`, q);
+        // 김치 프리미엄: 국내 거래소 원화 가격 ÷ 바이낸스 원화 환산가 - 1
+        for (const q of live.values()) {
+          const b = q.exchange !== "BINANCE" && bn.get(q.code);
+          if (b) q.premium = Math.round((q.price / b.price - 1) * 10000) / 100;
+        }
+        // 스냅샷에 없는 바이낸스 코인은 이름을 국내 거래소에서 빌려 새 행으로 (24시간 통계를 받은 경우만)
+        if (state.universe === "BINANCE") {
+          const have = new Set(state.rows.map((r) => r.key));
+          const names = new Map(state.rows.filter((r) => r.market !== "BINANCE").map((r) => [r.code, r.name]));
+          for (const [code, q] of bn) {
+            if (have.has(`BINANCE:${code}`) || q.value === undefined) continue;
+            const row = { code, name: names.get(code) || code, market: "BINANCE", tags: ["binance"], symbol: `${code}-KRW`,
+              marketCap: null, high52w: null, low52w: null };
+            row.key = keyOf(row);
+            state.rows.push(row);
+          }
+        }
+      }
     }
     for (const row of state.rows) {
       const q = live.get(row.key);
@@ -630,6 +682,7 @@ $("#universe").addEventListener("click", (e) => {
   state.universe = btn.dataset.u;
   state.page = 1;
   render();
+  if (state.region === "COIN") refreshLive();   // 거래소를 바꾸면 그 거래소 시세를 바로
 });
 
 $("#industry-list").addEventListener("change", () => {
