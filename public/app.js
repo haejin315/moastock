@@ -1,18 +1,22 @@
 /* 모아스톡 대시보드: /api/* (Cloudflare Pages Functions 프록시)만 호출한다. */
 "use strict";
 
+// [야후 기호, 이름, 시장] - 시장 탭(주요·국내·미국·일본·코인·원자재)으로 골라 본다
 const INDICES = [
-  ["^KS11", "코스피"],
-  ["^KQ11", "코스닥"],
-  ["^GSPC", "S&P 500"],
-  ["^IXIC", "나스닥"],
-  ["^N225", "닛케이 225"],
-  ["KRW=X", "원/달러"],
-  ["BTC-USD", "비트코인"],
-  ["CL=F", "WTI 유가"],
+  ["^KS11", "코스피", "KR"], ["^KQ11", "코스닥", "KR"], ["KRW=X", "원/달러", "KR"],
+  ["^GSPC", "S&P 500", "US"], ["^IXIC", "나스닥", "US"], ["^DJI", "다우존스", "US"], ["^NDX", "나스닥 100", "US"],
+  ["^SOX", "필라델피아 반도체", "US"],
+  ["^N225", "닛케이 225", "JP"], ["JPYKRW=X", "엔/원", "JP"],
+  ["BTC-USD", "비트코인", "COIN"], ["ETH-USD", "이더리움", "COIN"], ["XRP-USD", "리플", "COIN"], ["SOL-USD", "솔라나", "COIN"],
+  ["CL=F", "WTI 유가", "ETC"], ["GC=F", "금", "ETC"],
 ];
+const HEADLINE = ["^KS11", "^KQ11", "^GSPC", "^IXIC", "^N225", "KRW=X", "BTC-USD", "CL=F"];
+const TICKER_TABS = [["MAIN", "주요"], ["KR", "국내"], ["US", "미국"], ["JP", "일본"], ["COIN", "코인"], ["ETC", "원자재"]];
+let tickerTab = "MAIN";
+try { tickerTab = localStorage.getItem("moastock.tickerTab") || "MAIN"; } catch (e) {}
+const shownIndices = () => INDICES.filter(([sym, , m]) => tickerTab === "MAIN" ? HEADLINE.includes(sym) : m === tickerTab);
 const KNOWN_NAMES = new Map([
-  ...INDICES,
+  ...INDICES.map(([sym, name]) => [sym, name]),
   ["005930.KS", "삼성전자"],
   ["000660.KS", "SK하이닉스"],
   ["373220.KS", "LG에너지솔루션"],
@@ -84,7 +88,7 @@ async function fetchQuotes(symbols) {
 
 function renderTickers(bySymbol) {
   const strip = document.getElementById("ticker-strip");
-  strip.innerHTML = INDICES.map(([sym, name]) => {
+  strip.innerHTML = shownIndices().map(([sym, name]) => {
     const q = bySymbol.get(sym);
     if (!q) return `<div class="ticker"><div class="t-name">${esc(name)}</div><div class="muted">-</div></div>`;
     return `<div class="ticker">
@@ -95,9 +99,12 @@ function renderTickers(bySymbol) {
   }).join("");
 }
 
+// 관심종목 기호 → 종목 상세 링크 (지수·환율·선물은 링크 없음)
 function stockLink(sym, label) {
   const m = sym.match(/^(\d{6})\.(KS|KQ)$/);
-  return m ? `<a href="/stock.html?code=${m[1]}">${label}</a>` : label;
+  if (m) return `<a href="/stock.html?code=${m[1]}">${label}</a>`;
+  const market = /\.T$/.test(sym) ? "JP" : /-KRW$/.test(sym) ? "COIN" : /^[A-Z][A-Z.-]{0,9}$/.test(sym) ? "US" : null;
+  return market ? `<a href="/stock.html?market=${market}&symbol=${encodeURIComponent(sym)}">${label}</a>` : label;
 }
 
 function renderWatchlist(bySymbol, errors) {
@@ -122,7 +129,7 @@ function renderWatchlist(bySymbol, errors) {
 }
 
 async function refreshQuotes() {
-  const symbols = [...new Set([...INDICES.map(([s]) => s), ...watchlist])];
+  const symbols = [...new Set([...shownIndices().map(([s]) => s), ...watchlist])].slice(0, 24);
   try {
     const { quotes, errors } = await fetchQuotes(symbols);
     const bySymbol = new Map(quotes.map((q) => [q.symbol, q]));
@@ -134,6 +141,25 @@ async function refreshQuotes() {
     document.getElementById("updated-at").textContent = "시세 조회 실패";
   }
 }
+
+function renderTickerTabs() {
+  const el = document.getElementById("ticker-tabs");
+  el.innerHTML = TICKER_TABS.map(([v, label]) =>
+    `<button role="tab" data-r="${v}" class="${v === tickerTab ? "active" : ""}" aria-selected="${v === tickerTab}">${label}</button>`,
+  ).join("");
+  const more = { KR: "KR", US: "US", JP: "JP", COIN: "COIN" }[tickerTab];
+  document.getElementById("screener-link").href = more ? `/screener.html?market=${more}` : "/screener.html";
+}
+document.getElementById("ticker-tabs").addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-r]");
+  if (!btn) return;
+  tickerTab = btn.dataset.r;
+  try { localStorage.setItem("moastock.tickerTab", tickerTab); } catch (err) {}
+  renderTickerTabs();
+  document.getElementById("ticker-strip").innerHTML = '<span class="muted">불러오는 중…</span>';
+  refreshQuotes();
+});
+renderTickerTabs();
 
 // ---- 공시 ---------------------------------------------------------------
 

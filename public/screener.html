@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>모아스톡 스크리너</title>
-<meta name="description" content="국내 전 종목을 PER·PBR 등 모든 지표와 사용자 수식으로 줄세우는 스크리너">
+<meta name="description" content="국내·미국·일본 주식과 코인을 PER·PBR 등 지표와 사용자 수식으로 줄세우는 스크리너">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230f172a'/%3E%3Cpath d='M6 22l6-8 5 5 9-12' stroke='%2334d399' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="styles.css">
 </head>
@@ -18,7 +18,7 @@
               stroke-linecap="round" stroke-linejoin="round"/>
       </svg>
     </a>
-    <h1>스크리너<span class="en">국내 전 종목</span></h1>
+    <h1>스크리너<span class="en" id="region-title">국내 전 종목</span></h1>
   </div>
   <div class="topbar-right">
     <a class="more" href="/">← 대시보드</a>
@@ -28,14 +28,15 @@
 </header>
 
 <main class="screener-wrap">
+  <nav class="region-tabs" id="region" role="tablist" aria-label="시장">
+    <button role="tab" data-r="KR" class="active">국내</button>
+    <button role="tab" data-r="US">미국</button>
+    <button role="tab" data-r="JP">일본</button>
+    <button role="tab" data-r="COIN">코인</button>
+  </nav>
   <section class="card controls">
     <div class="ctrl-row">
-      <div class="seg" id="universe" role="group" aria-label="종목 범위">
-        <button data-u="all" class="active">전체</button>
-        <button data-u="KOSPI">코스피</button>
-        <button data-u="KOSDAQ">코스닥</button>
-        <button data-u="watch">관심종목</button>
-      </div>
+      <div class="seg" id="universe" role="group" aria-label="종목 범위"></div>
       <details class="industry-picker" id="industry-picker">
         <summary>업종 <span id="industry-count"></span></summary>
         <div class="industry-menu">
@@ -58,7 +59,7 @@
           <div id="column-list"></div>
         </div>
       </details>
-      <input id="search" placeholder="종목명·코드 검색" spellcheck="false">
+      <input id="search" placeholder="종목명·코드 검색" spellcheck="false" aria-label="종목 검색">
     </div>
     <div class="ctrl-row">
       <div id="formula-editor" class="formula-editor" aria-label="수식"></div>
@@ -105,7 +106,7 @@
 </main>
 
 <footer>
-  <p class="muted">시세·재무 지표: 네이버증권 (지연·전일 기준일 수 있음). 본 페이지는 정보 제공 목적이며 투자 판단의 근거가 될 수 없습니다.</p>
+  <p class="muted" id="source-note">시세·재무 지표: 네이버증권 (지연·전일 기준일 수 있음). 본 페이지는 정보 제공 목적이며 투자 판단의 근거가 될 수 없습니다.</p>
 </footer>
 
 <script type="module" src="screener.js"></script>

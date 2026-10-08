@@ -1,5 +1,5 @@
-/* 스크리너: 스냅샷(전 종목 + 펀더멘털) 로드 → 장중 시세 병합 → 파생지표 계산 →
-   유니버스/업종/검색 필터 → 선택한 컬럼만 표시, 컬럼 또는 사용자 수식으로 정렬.
+/* 스크리너: 시장(국내·미국·일본·코인)별 일일 스냅샷 로드 → 장중 시세 병합 → 파생지표 계산 →
+   세부 시장/업종/검색 필터 → 선택한 컬럼만 표시, 컬럼 또는 사용자 수식으로 정렬.
    수식은 여러 개를 동시에 켤 수 있고(각각 컬럼으로 추가), 켜고 끄는 것은
    정렬을 바꾸지 않는다 - 그 수식 컬럼의 헤더를 눌렀을 때만 정렬이 바뀐다.
    전부 클라이언트에서 동작한다. */
@@ -9,9 +9,46 @@ import { createFormulaEditor, PALETTE_MIME } from "./formula-editor.js";
 
 const PAGE = 50;
 
+// ---- 시장 --------------------------------------------------------------------
+// data: 일일 스냅샷 / live: /api/screener 장중 갱신 시장 / subs: 세부 시장 버튼 [값, 이름]
+// (세부 시장 값은 행의 market 이거나 tags 중 하나와 맞춘다)
+const REGIONS = {
+  KR: { label: "국내", title: "국내 전 종목", data: "/data/snapshot.json", currency: "KRW", live: ["KOSPI", "KOSDAQ"],
+    subs: [["all", "전체"], ["KOSPI", "코스피"], ["KOSDAQ", "코스닥"]],
+    source: "시세·재무 지표: 네이버증권 (지연·전일 기준일 수 있음)." },
+  US: { label: "미국", title: "미국 상장 종목", data: "/data/us.json", currency: "USD", live: ["US"],
+    subs: [["all", "전체"], ["sp500", "S&P 500"], ["ndx", "나스닥 100"], ["NASDAQ", "나스닥"], ["NYSE", "뉴욕증권거래소"],
+      ["AMEX", "아멕스"]],
+    source: "종목 목록: 나스닥 · 시세·재무 지표: 야후 파이낸스 (지연·전일 기준일 수 있음, 시가총액 1억 달러 이상)." },
+  JP: { label: "일본", title: "니케이 225", data: "/data/jp.json", currency: "JPY", live: [],
+    subs: [["all", "니케이 225"]],
+    source: "구성 종목: 위키백과 · 시세·재무 지표: 야후 파이낸스 (하루 한 번 갱신)." },
+  COIN: { label: "코인", title: "코인", data: "/data/coins.json", currency: "KRW", live: ["COIN"],
+    subs: [["all", "전체"], ["upbit", "업비트 원화마켓"], ["top", "시가총액 상위 250"]],
+    source: "시세·52주 범위: 업비트 · 시가총액: 코인게코 (원화 기준, 등락률은 24시간)." },
+};
+// 시장마다 없는 지표 (컬럼 메뉴에서 숨긴다)
+const NO_COLS = {
+  US: new Set(["foreignRate"]),
+  JP: new Set(["foreignRate"]),
+  COIN: new Set(["industry", "per", "pbr", "eps", "bps", "roe", "netIncome", "equity", "shares", "dividendYield", "dps",
+    "foreignRate"]),
+};
+const MARKET_LABEL = { KOSPI: "코스피", KOSDAQ: "코스닥", NASDAQ: "나스닥", NYSE: "뉴욕", AMEX: "아멕스", TSE: "도쿄",
+  UPBIT: "업비트", GLOBAL: "해외 거래소" };
+
 // ---- 컬럼 정의 -----------------------------------------------------------
 
-const fmtPrice = (v) => v === null || v === undefined ? "-" : v.toLocaleString("ko-KR");
+const currency = () => REGIONS[state.region].currency;
+const fmtPrice = (v) => {
+  if (v === null || v === undefined || !Number.isFinite(v)) return "-";
+  const c = currency();
+  if (c === "USD") return "$" + v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  if (c === "JPY") return "¥" + Math.round(v).toLocaleString("ko-KR");
+  if (Math.abs(v) < 100 && v % 1) return v.toLocaleString("ko-KR", { maximumFractionDigits: Math.abs(v) < 1 ? 4 : 2 });
+  return v.toLocaleString("ko-KR");
+};
+// 개수(거래량·주식수): 조·억 단위만
 const fmtBig = (v) => {
   if (v === null || v === undefined || !Number.isFinite(v)) return "-";
   const sign = v < 0 ? "-" : "";
@@ -19,6 +56,15 @@ const fmtBig = (v) => {
   if (a >= 1e12) return sign + (a / 1e12).toFixed(1) + "조";
   if (a >= 1e8) return sign + Math.round(a / 1e8).toLocaleString("ko-KR") + "억";
   return sign + Math.round(a).toLocaleString("ko-KR");
+};
+// 금액(거래대금·시가총액·순이익·순자산): 통화 단위를 붙인다 - 원은 기존처럼 생략
+const fmtMoney = (v) => {
+  const t = fmtBig(v);
+  if (t === "-") return t;
+  const c = currency();
+  if (c === "USD") return Math.abs(v) >= 1e8 ? `${t} 달러` : "$" + Math.round(v).toLocaleString("en-US");
+  if (c === "JPY") return `${t}엔`;
+  return t;
 };
 const fmtRatio = (v) => v === null || v === undefined || Number.isNaN(v)
   ? "-" : (Math.abs(v) >= 1000 ? Math.round(v).toLocaleString("ko-KR") : v.toFixed(2));
@@ -29,15 +75,15 @@ const COLUMNS = [
   { key: "industry", label: "업종", fmt: (v) => v || "-", text: true, w: 140 },
   { key: "price", label: "현재가", fmt: fmtPrice, w: 92 },
   { key: "volume", label: "거래량", fmt: fmtBig, w: 92 },
-  { key: "value", label: "거래대금", fmt: fmtBig, w: 96 },
-  { key: "marketCap", label: "시가총액", fmt: fmtBig, w: 96 },
+  { key: "value", label: "거래대금", fmt: fmtMoney, w: 104 },
+  { key: "marketCap", label: "시가총액", fmt: fmtMoney, w: 108 },
   { key: "per", label: "PER", full: "주가수익비율", fmt: fmtRatio, w: 78 },
   { key: "pbr", label: "PBR", full: "주가순자산비율", fmt: fmtRatio, w: 78 },
   { key: "eps", label: "EPS", full: "주당순이익", fmt: fmtPrice, w: 90 },
   { key: "bps", label: "BPS", full: "주당순자산", fmt: fmtPrice, w: 90 },
   { key: "roe", label: "ROE%", full: "자기자본이익률(%)", fmt: fmtRatio, w: 78 },
-  { key: "netIncome", label: "순이익", fmt: fmtBig, w: 96 },
-  { key: "equity", label: "순자산", fmt: fmtBig, w: 96 },
+  { key: "netIncome", label: "순이익", fmt: fmtMoney, w: 104 },
+  { key: "equity", label: "순자산", fmt: fmtMoney, w: 104 },
   { key: "shares", label: "주식수", full: "상장주식수", fmt: fmtBig, w: 104 },
   { key: "dividendYield", label: "배당률%", full: "배당수익률(%)", fmt: fmtRatio, w: 84 },
   { key: "dps", label: "주당배당금", fmt: fmtPrice, w: 100 },
@@ -82,9 +128,16 @@ function saveJson(key, v) {
   try { localStorage.setItem(key, JSON.stringify(v)); } catch (e) {}
 }
 
+const startRegion = (() => {
+  const q = new URLSearchParams(location.search).get("market");
+  const r = (q || loadJson("moastock.region", "KR")).toUpperCase();
+  return REGIONS[r] ? r : "KR";
+})();
+
 const state = {
+  region: startRegion,       // KR | US | JP | COIN
   rows: [],
-  universe: "all",           // all | KOSPI | KOSDAQ | watch
+  universe: "all",           // 세부 시장(REGIONS[region].subs) | watch
   industries: new Set(),
   search: "",
   columns: loadJson("moastock.columns", DEFAULT_COLUMNS).filter((k) => COL_BY_KEY.has(k)),
@@ -95,6 +148,8 @@ const state = {
 };
 if (!state.columns.length) state.columns = [...DEFAULT_COLUMNS];
 let nextFormulaId = 1;
+const colAvailable = (key) => !NO_COLS[state.region]?.has(key);
+const visibleColumns = () => state.columns.filter(colAvailable);
 const formulaKey = (f) => `__f${f.id}`;
 
 const $ = (sel) => document.querySelector(sel);
@@ -104,7 +159,9 @@ const esc = (s) => String(s).replace(/[&<>"']/g, (c) =>
 // ---- 관심종목 (대시보드와 같은 저장소 공유) ---------------------------------
 
 let watch = new Set(loadJson("moastock.watchlist", []));
-const symbolOf = (row) => row.code + (row.market === "KOSDAQ" ? ".KQ" : ".KS");
+// 시세 조회 기호 (야후): 국내 005930.KS, 미국 AAPL, 일본 7203.T, 코인 BTC-KRW
+const symbolOf = (row) => row.symbol && state.region !== "COIN" ? row.symbol
+  : state.region === "COIN" ? `${row.code}-KRW` : row.code + (row.market === "KOSDAQ" ? ".KQ" : ".KS");
 const watchHasCode = (row) => watch.has(symbolOf(row));
 
 // ---- 파생 지표 --------------------------------------------------------------
@@ -166,24 +223,53 @@ function restoreActiveFormulas() {
 
 // ---- 데이터 로드 -------------------------------------------------------------
 
-async function loadSnapshot() {
-  const body = await (await fetch("/data/snapshot.json")).json();
+let loadSeq = 0;
+
+async function loadRegion(region) {
+  const seq = ++loadSeq;
+  const R = REGIONS[region];
+  state.region = region;
+  saveJson("moastock.region", region);
+  state.universe = "all";
+  state.industries.clear();
+  state.page = 1;
+  state.rows = [];
+  renderRegionTabs();
+  $("#industry-count").textContent = "";
+  $("#region-title").textContent = R.title;
+  $("#source-note").textContent = `${R.source} 본 페이지는 정보 제공 목적이며 투자 판단의 근거가 될 수 없습니다.`;
+  $("#data-info").textContent = "불러오는 중…";
+  $("#industry-picker").hidden = !colAvailable("industry");
+  buildColumnMenu();
+  render();
+  const body = await (await fetch(R.data)).json();
+  if (seq !== loadSeq) return;                       // 그새 다른 시장을 골랐다
   state.rows = body.stocks.map((s) => ({ ...s }));
   state.rows.forEach(computeDerived);
-  $("#data-info").textContent = `재무 기준 ${String(body.generatedAt).slice(0, 10)} · ${body.count}종목`;
-  restoreActiveFormulas();
-  restoreSorts();
+  $("#data-info").textContent = `기준 ${String(body.generatedAt).slice(0, 16).replace("T", " ")} · ${body.count}종목`;
   buildIndustryMenu();
-  buildColumnMenu();
-  renderFormulaChips();
   render();
+  refreshLive();
+}
+
+function renderRegionTabs() {
+  document.querySelectorAll("#region button").forEach((b) => {
+    b.classList.toggle("active", b.dataset.r === state.region);
+    b.setAttribute("aria-selected", String(b.dataset.r === state.region));
+  });
+  $("#universe").innerHTML = [...REGIONS[state.region].subs, ["watch", "관심종목"]].map(([v, label]) =>
+    `<button data-u="${esc(v)}" class="${v === state.universe ? "active" : ""}">${esc(label)}</button>`).join("");
 }
 
 async function refreshLive() {
+  const region = state.region;
+  const markets = REGIONS[region].live;
+  if (!markets.length) return;
   try {
     const results = await Promise.all(
-      ["KOSPI", "KOSDAQ"].map((m) => fetch(`/api/screener?market=${m}`).then((r) => r.json())),
+      markets.map((m) => fetch(`/api/screener?market=${m}`).then((r) => r.json())),
     );
+    if (region !== state.region) return;
     const live = new Map();
     for (const body of results) for (const q of body.quotes || []) live.set(q.code, q);
     for (const row of state.rows) {
@@ -192,7 +278,9 @@ async function refreshLive() {
       for (const k of ["price", "change", "volume", "value", "marketCap"]) {
         if (q[k] !== null && q[k] !== undefined) row[k] = q[k];
       }
-      if (row.eps !== null && row.price) row.per = row.eps > 0 ? Math.round((row.price / row.eps) * 100) / 100 : null;
+      if (row.eps !== null && row.eps !== undefined && row.price) {
+        row.per = row.eps > 0 ? Math.round((row.price / row.eps) * 100) / 100 : null;
+      }
       if (row.bps && row.price) row.pbr = Math.round((row.price / row.bps) * 100) / 100;
       computeDerived(row);
     }
@@ -218,13 +306,13 @@ function buildIndustryMenu() {
 }
 
 function buildColumnMenu() {
-  $("#column-list").innerHTML = COLUMNS.map((c) =>
+  $("#column-list").innerHTML = COLUMNS.filter((c) => colAvailable(c.key)).map((c) =>
     `<label><input type="checkbox" value="${c.key}" ${state.columns.includes(c.key) ? "checked" : ""}> ${esc(c.full)}</label>`,
   ).join("");
   updateColumnCount();
 }
 function updateColumnCount() {
-  $("#column-count").textContent = `(${state.columns.length})`;
+  $("#column-count").textContent = `(${visibleColumns().length})`;
 }
 
 // ---- 수식 칩 -------------------------------------------------------------------
@@ -258,11 +346,13 @@ function renderFormulaChips() {
 function filtered() {
   const q = state.search.trim().toLowerCase();
   return state.rows.filter((r) => {
-    if (state.universe === "KOSPI" || state.universe === "KOSDAQ") {
-      if (r.market !== state.universe) return false;
-    } else if (state.universe === "watch" && !watchHasCode(r)) return false;
+    if (state.universe === "watch") {
+      if (!watchHasCode(r)) return false;
+    } else if (state.universe !== "all" && r.market !== state.universe && !(r.tags || []).includes(state.universe)) {
+      return false;
+    }
     if (state.industries.size && !state.industries.has(r.industry)) return false;
-    if (q && !(r.name.toLowerCase().includes(q) || r.code.includes(q))) return false;
+    if (q && ![r.name, r.nameKo, r.nameEn, r.code].some((x) => x && String(x).toLowerCase().includes(q))) return false;
     return true;
   });
 }
@@ -344,7 +434,7 @@ function removeSort(key) {
 function renderMobileSort() {
   const sel = $("#m-sort-key");
   if (!sel) return;
-  const keys = ["change", ...state.columns.filter((k) => !COL_BY_KEY.get(k).text), ...state.formulas.map(formulaKey)];
+  const keys = ["change", ...visibleColumns().filter((k) => !COL_BY_KEY.get(k).text), ...state.formulas.map(formulaKey)];
   const cur = state.sorts[0]?.key;
   sel.innerHTML = (cur ? "" : '<option value="">시가총액순(기본)</option>') +
     [...new Set(keys)].map((k) => `<option value="${esc(k)}" ${k === cur ? "selected" : ""}>${esc(sortLabel(k))}</option>`).join("");
@@ -394,13 +484,14 @@ async function fillSparks(rows) {
   for (let i = 0; i < missing.length; i += 20) {
     const part = missing.slice(i, i + 20);
     try {
-      const symbols = part.map(symbolOf).join(",");
+      const codeOf = new Map(part.map((r) => [symbolOf(r), r.code]));
+      const symbols = [...codeOf.keys()].join(",");
       const body = await (await fetch(`/api/quote?symbols=${encodeURIComponent(symbols)}`)).json();
       for (const q of body.quotes || []) {
-        sparkCache.set(q.symbol.replace(/\.(KS|KQ)$/, ""), { spark: q.spark, t: Date.now() });
+        sparkCache.set(codeOf.get(q.symbol) ?? q.symbol, { spark: q.spark, t: Date.now() });
       }
       for (const sym of Object.keys(body.errors || {})) {
-        sparkCache.set(sym.replace(/\.(KS|KQ)$/, ""), { spark: null, t: Date.now() });
+        sparkCache.set(codeOf.get(sym) ?? sym, { spark: null, t: Date.now() });
       }
     } catch (e) { return; }
     if (epoch !== sparkEpoch) return;
@@ -431,7 +522,7 @@ function renderHead() {
     `<th class="num" style="width:${FIXED_W.change}px" data-k="change">등락률%</th>`,
   ];
   let total = FIXED_W.star + FIXED_W.name + FIXED_W.chart + FIXED_W.change;
-  for (const key of state.columns) {
+  for (const key of visibleColumns()) {
     const c = COL_BY_KEY.get(key);
     cells.push(`<th class="${c.text ? "" : "num"}" style="width:${c.w}px" data-k="${c.key}" title="${esc(c.full)}">${esc(c.label)}</th>`);
     total += c.w;
@@ -485,14 +576,15 @@ function render() {
     const cached = sparkCache.get(r.code);
     const cells = [
       `<td class="c-star"><button class="star ${watchHasCode(r) ? "on" : ""}" data-code="${r.code}" title="관심종목">★</button></td>`,
-      `<td class="c-name"><span class="rank muted">${(state.page - 1) * PAGE + idx + 1}</span> ${esc(r.name)}
-        <div class="sym">${r.code} · ${r.market === "KOSDAQ" ? "코스닥" : "코스피"}</div></td>`,
+      `<td class="c-name"><span class="rank muted">${(state.page - 1) * PAGE + idx + 1}</span> ${esc(r.nameKo || r.name)}
+        <div class="sym">${esc(r.code)} · ${esc(MARKET_LABEL[r.market] || r.market || "")}${
+          r.nameKo && r.name !== r.nameKo ? ` · <span class="name-ko">${esc(r.name)}</span>` : ""}</div></td>`,
       // 휴대폰 카드 머리: 현재가 + 등락률 (데스크톱 표에서는 숨김)
       `<td class="c-mhead"><b>${fmtPrice(r.price)}</b><span class="${chgClass(r.change)}">${
         r.change === null || r.change === undefined ? "-" : (r.change > 0 ? "+" : "") + r.change.toFixed(2) + "%"}</span></td>`,
       `<td class="c-spark" data-spark="${r.code}">${cached ? sparkSvg(cached.spark, r.change) : '<span class="muted">·</span>'}</td>`,
       `<td class="num c-change ${chgClass(r.change)}">${r.change === null || r.change === undefined ? "-" : r.change.toFixed(2)}</td>`,
-      ...state.columns.map((key) => cellHtml(r, key)),
+      ...visibleColumns().map((key) => cellHtml(r, key)),
       ...state.formulas.map((f) => `<td class="num c-metric c-formula" data-label="${esc(f.name)}">${fmtRatio(r[formulaKey(f)] ?? null)}</td>`),
     ];
     return `<tr class="rowlink" data-code="${r.code}">${cells.join("")}</tr>`;
@@ -506,6 +598,14 @@ function render() {
 }
 
 // ---- 이벤트 -----------------------------------------------------------------------
+
+$("#region").addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-r]");
+  if (!btn || btn.dataset.r === state.region) return;
+  sparkCache.clear();
+  history.replaceState(null, "", `?market=${btn.dataset.r}`);
+  loadRegion(btn.dataset.r).catch(() => { $("#data-info").textContent = "데이터를 불러오지 못했습니다"; });
+});
 
 $("#universe").addEventListener("click", (e) => {
   const btn = e.target.closest("button[data-u]");
@@ -534,7 +634,9 @@ $("#industry-clear").addEventListener("click", () => {
 
 $("#column-list").addEventListener("change", () => {
   const picked = [...document.querySelectorAll("#column-list input:checked")].map((i) => i.value);
-  state.columns = COLUMNS.map((c) => c.key).filter((k) => picked.includes(k));
+  // 이 시장에 없는 지표는 메뉴에 없을 뿐 선택은 그대로 둔다 (다른 시장으로 가면 다시 보이게)
+  state.columns = COLUMNS.map((c) => c.key)
+    .filter((k) => picked.includes(k) || (!colAvailable(k) && state.columns.includes(k)));
   if (!state.columns.length) state.columns = ["price"];
   saveJson("moastock.columns", state.columns);
   updateColumnCount();
@@ -767,7 +869,10 @@ $("#screener-table").addEventListener("click", (e) => {
     return;
   }
   const tr = e.target.closest("tr.rowlink");
-  if (tr) location.href = `/stock.html?code=${tr.dataset.code}`;
+  if (!tr) return;
+  if (state.region === "KR") { location.href = `/stock.html?code=${tr.dataset.code}`; return; }
+  const row = state.rows.find((r) => r.code === tr.dataset.code);
+  if (row) location.href = `/stock.html?market=${state.region}&symbol=${encodeURIComponent(symbolOf(row))}`;
 });
 
 // 드롭다운(업종/컬럼): 바깥 클릭이나 Esc로 닫고, 하나를 열면 다른 하나는 닫는다
@@ -809,7 +914,10 @@ try {
 
 // ---- 시작 -------------------------------------------------------------------------
 
-loadSnapshot().then(refreshLive).catch(() => {
-  $("#data-info").textContent = "스냅샷 로드 실패";
+restoreActiveFormulas();
+restoreSorts();
+renderFormulaChips();
+loadRegion(state.region).catch(() => {
+  $("#data-info").textContent = "데이터를 불러오지 못했습니다";
 });
 setInterval(refreshLive, 60_000);

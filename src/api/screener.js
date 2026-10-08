@@ -1,18 +1,23 @@
-// GET /api/screener?market=KOSPI|KOSDAQ
+// GET /api/screener?market=KOSPI|KOSDAQ|US|COIN
 // 장중 실시간 갱신용: 전 종목의 시세/등락률/거래량/거래대금/시총만 가볍게 준다.
-// PER 등 펀더멘털은 일일 스냅샷(/data/snapshot.json)이 담당하고, 클라이언트가
-// 종목코드로 병합한다. 페이지네이션 팬아웃(10~19 서브요청)이 있어 60초 엣지 캐시.
+// PER 등 펀더멘털은 일일 스냅샷(/data/snapshot.json, us.json, jp.json, coins.json)이 담당하고,
+// 클라이언트가 종목코드로 병합한다.
+//   KOSPI·KOSDAQ: 네이버 모바일 증권 (페이지 팬아웃 10~19 서브요청)
+//   US: 나스닥 스크리너 API (나스닥·뉴욕·아멕스 3번)   COIN: 업비트 원화마켓 (목록 1 + 시세 3번)
+// 일본은 장중 갱신 없이 일일 스냅샷만 쓴다. 모두 60초 엣지 캐시.
 import { json, bad, cached, fetchUpstream } from "./_utils.js";
 
 const CACHE_SEC = 60;
 const PAGE_SIZE = 100;
 const MAX_PAGES = 25;
+const MARKETS = new Set(["KOSPI", "KOSDAQ", "US", "COIN"]);
+const BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36";
 
 export async function onRequestGet(context) {
   const market = (new URL(context.request.url).searchParams.get("market") || "").toUpperCase();
-  if (market !== "KOSPI" && market !== "KOSDAQ") {
-    return bad("market은 KOSPI 또는 KOSDAQ 이어야 합니다");
-  }
+  if (!MARKETS.has(market)) return bad("market은 KOSPI, KOSDAQ, US, COIN 중 하나여야 합니다");
+  if (market === "US") return cached(context, CACHE_SEC, () => usQuotes());
+  if (market === "COIN") return cached(context, CACHE_SEC, () => coinQuotes());
 
   return cached(context, CACHE_SEC, async () => {
     const rows = [];
@@ -39,6 +44,48 @@ export async function onRequestGet(context) {
     }
     return json({ market, count: rows.length, quotes: rows }, { maxAge: CACHE_SEC });
   });
+}
+
+// 야후 기호로 맞춘다 (BRK/B → BRK-B) - 일일 스냅샷 us.json 의 code 와 같게
+const usSymbol = (s) => String(s).trim().replace(/[/.]/g, "-").toUpperCase();
+
+async function usQuotes() {
+  const rows = [];
+  for (const ex of ["nasdaq", "nyse", "amex"]) {
+    // 나스닥 API는 브라우저가 아닌 User-Agent 요청을 응답 없이 끊는다
+    const resp = await fetch(`https://api.nasdaq.com/api/screener/stocks?tableonly=true&download=true&exchange=${ex}`, {
+      headers: { "User-Agent": BROWSER_UA, Accept: "application/json", "Accept-Language": "en-US,en;q=0.9" },
+      cf: { cacheTtl: 30 },
+    });
+    if (!resp.ok) throw new Error(`upstream ${resp.status}`);
+    const body = await resp.json();
+    for (const r of body?.data?.rows || []) {
+      const price = toNum(String(r.lastsale || "").replace("$", ""));
+      if (price === null) continue;
+      rows.push({
+        code: usSymbol(r.symbol), price, change: toNum(String(r.pctchange || "").replace("%", "")),
+        volume: toNum(r.volume), marketCap: toNum(r.marketCap),
+        value: price && toNum(r.volume) ? Math.round(price * toNum(r.volume)) : null,
+      });
+    }
+  }
+  return json({ market: "US", count: rows.length, quotes: rows }, { maxAge: CACHE_SEC });
+}
+
+async function coinQuotes() {
+  const markets = (await (await fetchUpstream("https://api.upbit.com/v1/market/all?isDetails=false")).json())
+    .map((m) => m.market).filter((m) => m.startsWith("KRW-"));
+  const rows = [];
+  for (let i = 0; i < markets.length; i += 100) {
+    const part = markets.slice(i, i + 100).join(",");
+    for (const t of await (await fetchUpstream(`https://api.upbit.com/v1/ticker?markets=${part}`)).json()) {
+      rows.push({
+        code: t.market.slice(4), price: t.trade_price, change: Math.round(t.signed_change_rate * 10000) / 100,
+        volume: t.acc_trade_volume_24h, value: Math.round(t.acc_trade_price_24h),
+      });
+    }
+  }
+  return json({ market: "COIN", count: rows.length, quotes: rows }, { maxAge: CACHE_SEC });
 }
 
 function toNum(text) {

@@ -167,6 +167,39 @@ test("screener: 단위 환산(거래대금 백만원→원, 시총 억원→원)
   assert.equal((await screener.onRequestGet(ctx("/api/screener?market=NYSE"))).status, 400);
 });
 
+test("screener: 미국(나스닥 API) - 기호를 야후 형식으로, $·% 떼고 숫자로", async () => {
+  mockFetch([["api.nasdaq.com", (url) => ({ data: { rows: url.includes("exchange=nyse") ? [
+    { symbol: "BRK/B", lastsale: "$480.10", pctchange: "-0.5%", volume: "1000", marketCap: "1000000000000" },
+  ] : url.includes("exchange=nasdaq") ? [
+    { symbol: "AAPL", lastsale: "$336.67", pctchange: "0.91%", volume: "2,000", marketCap: "4913422663680" },
+    { symbol: "XXXX", lastsale: "NA", pctchange: "", volume: "", marketCap: "" },
+  ] : [] } })]]);
+  const r = await bodyOf(await screener.onRequestGet(ctx("/api/screener?market=US")));
+  const by = Object.fromEntries(r.data.quotes.map((q) => [q.code, q]));
+  assert.equal(r.data.count, 2, "시세 없는 행은 뺀다");
+  assert.equal(by["BRK-B"].price, 480.1);
+  assert.equal(by.AAPL.change, 0.91);
+  assert.equal(by.AAPL.value, Math.round(336.67 * 2000));
+});
+
+test("screener: 코인(업비트 원화마켓) - 원화 마켓만, 등락률은 %로", async () => {
+  mockFetch([
+    ["/market/all", () => [{ market: "KRW-BTC" }, { market: "BTC-ETH" }, { market: "KRW-ETH" }]],
+    ["/v1/ticker", (url) => {
+      assert.ok(!url.includes("BTC-ETH"), "원화마켓만 조회");
+      return [{ market: "KRW-BTC", trade_price: 113181000, signed_change_rate: -0.0032, acc_trade_volume_24h: 10,
+                acc_trade_price_24h: 1.5e12 },
+              { market: "KRW-ETH", trade_price: 3510000, signed_change_rate: 0.01234, acc_trade_volume_24h: 5,
+                acc_trade_price_24h: 2.4e11 }];
+    }],
+  ]);
+  const r = await bodyOf(await screener.onRequestGet(ctx("/api/screener?market=COIN")));
+  const by = Object.fromEntries(r.data.quotes.map((q) => [q.code, q]));
+  assert.equal(by.BTC.change, -0.32);
+  assert.equal(by.ETH.change, 1.23);
+  assert.equal(by.BTC.value, 1.5e12);
+});
+
 // ---- /api/chart --------------------------------------------------------------
 
 test("chart: 타임프레임 화이트리스트, OHLCV 결측 캔들 제외", async () => {

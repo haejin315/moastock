@@ -133,6 +133,16 @@ footer { padding: 8px 20px 24px; }
 .seg { display: flex; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }
 .seg button { background: none; border: 0; color: var(--muted); padding: 7px 14px; cursor: pointer; font-size: 13px; }
 .seg button.active { background: var(--accent); color: #06281c; font-weight: 600; }
+.seg { flex-wrap: wrap; }
+
+/* 시장 탭 (국내·미국·일본·코인) - 스크리너와 대시보드가 같이 쓴다 */
+.region-tabs { display: flex; gap: 2px; margin: 0 0 12px; border-bottom: 1px solid var(--line);
+  overflow-x: auto; scrollbar-width: none; }
+.region-tabs button { background: none; border: 0; border-bottom: 2px solid transparent; color: var(--muted);
+  padding: 9px 18px; font-size: 15px; cursor: pointer; white-space: nowrap; margin-bottom: -1px; }
+.region-tabs button:hover { color: var(--text); }
+.region-tabs button.active { color: var(--text); border-bottom-color: var(--accent); font-weight: 700; }
+.sym .name-ko { color: var(--muted); }
 #search, #formula {
   background: var(--input-bg); color: var(--text); border: 1px solid var(--line);
   border-radius: 8px; padding: 7px 10px; font-size: 13px;
@@ -475,3 +485,6 @@ table.screener td.c-mhead { display: none; }
 .ai-intro p { margin: 0 0 8px; }
 .ai-examples { display: flex; flex-wrap: wrap; gap: 6px; }
 .ai-examples .chip { font-size: 12px; text-align: left; }
+
+/* 대시보드 지수 줄 위의 시장 탭 */
+.ticker-tabs { margin: 0; padding: 0 20px; }

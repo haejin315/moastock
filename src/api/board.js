@@ -60,11 +60,14 @@ function validPassword(pw) {
   return typeof pw === "string" && pw.length >= PW_MIN && pw.length <= PW_MAX;
 }
 
+// 국내 6자리 종목코드, 또는 해외·코인 기호(AAPL, BRK-B, 7203.T, BTC-KRW)
+const BOARD_CODE = /^(\d{6}|[A-Z0-9][A-Z0-9.-]{0,14})$/;
+
 export async function onRequestGet(context) {
   const db = context.env.BOARD_DB;
   if (!db) return json({ items: [], error: "board_unavailable" });
   const code = (new URL(context.request.url).searchParams.get("code") || "").trim();
-  if (!/^\d{6}$/.test(code)) return bad("code는 6자리 종목코드여야 합니다");
+  if (!BOARD_CODE.test(code)) return bad("code는 6자리 종목코드 또는 해외·코인 기호여야 합니다");
   await ensureSchema(db);
   const { results } = await db
     .prepare(
@@ -89,7 +92,7 @@ export async function onRequestPost(context) {
   const nick = String(payload.nick || "").trim().slice(0, MAX_NICK) || "익명";
   const body = String(payload.body || "").trim();
   const password = String(payload.password || "");
-  if (!/^\d{6}$/.test(code)) return bad("code는 6자리 종목코드여야 합니다");
+  if (!BOARD_CODE.test(code)) return bad("code는 6자리 종목코드 또는 해외·코인 기호여야 합니다");
   if (!body) return bad("내용을 입력하세요");
   if (body.length > MAX_BODY) return bad(`내용은 ${MAX_BODY}자 이내로 작성하세요`);
   if (!validPassword(password)) return bad(`비밀번호는 ${PW_MIN}~${PW_MAX}자로 입력하세요`);

@@ -1,28 +1,49 @@
 /* 종목 상세: 캔들차트(분/일/주/월), 지표, 공시, 뉴스, 토론방.
-   URL: /stock.html?code=005930 */
+   URL: 국내 /stock.html?code=005930
+        해외·코인 /stock.html?market=US&symbol=AAPL · market=JP&symbol=7203.T · market=COIN&symbol=BTC-KRW
+        (해외·코인은 공시·뉴스 없이 차트·지표·토론방만) */
 "use strict";
 
 const $ = (sel) => document.querySelector(sel);
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-const code = (new URLSearchParams(location.search).get("code") || "").trim();
-if (!/^\d{6}$/.test(code)) {
+const params = new URLSearchParams(location.search);
+const MARKETS = {
+  KR: { data: "/data/snapshot.json", currency: "KRW", source: "네이버증권" },
+  US: { data: "/data/us.json", currency: "USD", source: "야후 파이낸스" },
+  JP: { data: "/data/jp.json", currency: "JPY", source: "야후 파이낸스" },
+  COIN: { data: "/data/coins.json", currency: "KRW", source: "업비트·코인게코" },
+};
+const MARKET_LABEL = { KOSPI: "코스피", KOSDAQ: "코스닥", NASDAQ: "나스닥", NYSE: "뉴욕", AMEX: "아멕스", TSE: "도쿄",
+  UPBIT: "업비트", GLOBAL: "해외 거래소" };
+const market = MARKETS[(params.get("market") || "KR").toUpperCase()] ? (params.get("market") || "KR").toUpperCase() : "KR";
+const M = MARKETS[market];
+// 국내는 6자리 종목코드, 해외·코인은 야후 기호 (토론방 글도 이 값으로 묶는다)
+const code = market === "KR" ? (params.get("code") || "").trim() : (params.get("symbol") || "").trim().toUpperCase();
+if (market === "KR" ? !/^\d{6}$/.test(code) : !/^[A-Z0-9][A-Z0-9.-]{0,14}$/.test(code)) {
   document.body.innerHTML = '<p style="padding:40px">잘못된 종목코드입니다. <a href="/screener.html">스크리너로</a></p>';
   throw new Error("bad code");
 }
 
 let stock = null;   // snapshot 행
 let snapshotAt = "";
-let symbol = code + ".KS";
+let symbol = market === "KR" ? code + ".KS" : code;
 
-const fmtPrice = (v) => v === null || v === undefined ? "-" : v.toLocaleString("ko-KR");
+const fmtPrice = (v) => {
+  if (v === null || v === undefined || !Number.isFinite(v)) return "-";
+  if (M.currency === "USD") return "$" + v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  if (M.currency === "JPY") return "¥" + Math.round(v).toLocaleString("ko-KR");
+  if (Math.abs(v) < 100 && v % 1) return v.toLocaleString("ko-KR", { maximumFractionDigits: Math.abs(v) < 1 ? 4 : 2 });
+  return v.toLocaleString("ko-KR");
+};
 const fmtBig = (v) => {
   if (v === null || v === undefined || !Number.isFinite(v)) return "-";
   const a = Math.abs(v), sign = v < 0 ? "-" : "";
-  if (a >= 1e12) return sign + (a / 1e12).toFixed(1) + "조";
-  if (a >= 1e8) return sign + Math.round(a / 1e8).toLocaleString("ko-KR") + "억";
-  return sign + Math.round(a).toLocaleString("ko-KR");
+  const unit = M.currency === "USD" ? " 달러" : M.currency === "JPY" ? "엔" : "";
+  if (a >= 1e12) return sign + (a / 1e12).toFixed(1) + "조" + unit;
+  if (a >= 1e8) return sign + Math.round(a / 1e8).toLocaleString("ko-KR") + "억" + unit;
+  return M.currency === "USD" ? "$" + Math.round(v).toLocaleString("en-US") : sign + Math.round(a).toLocaleString("ko-KR") + unit;
 };
 const fmtRatio = (v) => v === null || v === undefined || Number.isNaN(v) ? "-" : v.toFixed(2);
 // 서버 시각(UTC)을 한국 시간 "YYYY-MM-DD HH:mm"으로
@@ -50,16 +71,18 @@ $("#watch-toggle").addEventListener("click", () => {
 
 async function loadInfo() {
   try {
-    const body = await (await fetch("/data/snapshot.json")).json();
-    stock = body.stocks.find((s) => s.code === code) || null;
+    const body = await (await fetch(M.data)).json();
+    stock = body.stocks.find((s) => market === "KR" ? s.code === code
+      : market === "COIN" ? `${s.code}-KRW` === code : s.symbol === code) || null;
     snapshotAt = body.generatedAt || "";
   } catch (e) { /* 스냅샷 없이도 차트는 동작 */ }
   if (stock) {
-    symbol = code + (stock.market === "KOSDAQ" ? ".KQ" : ".KS");
-    document.title = `${stock.name} - 모아스톡`;
-    $("#stock-title").firstChild.textContent = stock.name;
-    $("#stock-code").textContent =
-      [code, stock.market === "KOSDAQ" ? "코스닥" : "코스피", stock.industry].filter(Boolean).join(" · ");
+    if (market === "KR") symbol = code + (stock.market === "KOSDAQ" ? ".KQ" : ".KS");
+    const name = stock.nameKo || stock.name;
+    document.title = `${name} - 모아스톡`;
+    $("#stock-title").firstChild.textContent = name;
+    $("#stock-code").textContent = [stock.code, MARKET_LABEL[stock.market] || stock.market, stock.industry,
+      stock.nameKo && stock.name !== stock.nameKo ? stock.name : null].filter(Boolean).join(" · ");
     renderFacts();
   } else {
     $("#stock-title").firstChild.textContent = code;
@@ -75,6 +98,14 @@ function renderFacts(livePrice = null) {
   const s = stock;
   const shares = s.price && s.marketCap ? s.marketCap / s.price : null;
   const marketCap = livePrice && shares ? shares * livePrice : s.marketCap;
+  if (market === "COIN") {
+    $("#facts").innerHTML = [
+      ["시가총액", fmtBig(marketCap)], ["시가총액 순위", s.rank ? `${s.rank}위` : "-"],
+      ["24시간 거래대금", fmtBig(s.value)], ["52주 최고가", fmtPrice(s.high52w)], ["52주 최저가", fmtPrice(s.low52w)],
+    ].map(([k, v]) => `<div class="fact"><div class="fact-k">${k}</div><div class="fact-v">${v}</div></div>`).join("");
+    $("#facts-note").textContent = `코인 지표: ${M.source} ${String(snapshotAt).slice(0, 10)} 기준`;
+    return;
+  }
   const facts = [
     ["시가총액", fmtBig(marketCap)],
     ["주가수익비율(PER)", fmtRatio(s.per)], ["주가순자산비율(PBR)", fmtRatio(s.pbr)],
@@ -82,13 +113,13 @@ function renderFacts(livePrice = null) {
     ["자기자본이익률(ROE)", s.eps !== null && s.bps ? (s.eps / s.bps * 100).toFixed(1) + "%" : "-"],
     ["순이익(추정)", s.eps !== null && shares ? fmtBig(s.eps * shares) : "-"],
     ["순자산(추정)", s.bps !== null && shares ? fmtBig(s.bps * shares) : "-"],
-    ["배당수익률", s.dividendYield !== null ? s.dividendYield.toFixed(2) + "%" : "-"],
-    ["외국인보유비율", s.foreignRate !== null ? s.foreignRate.toFixed(2) + "%" : "-"],
+    ["배당수익률", s.dividendYield !== null && s.dividendYield !== undefined ? s.dividendYield.toFixed(2) + "%" : "-"],
+    ...(market === "KR" ? [["외국인보유비율", s.foreignRate !== null ? s.foreignRate.toFixed(2) + "%" : "-"]] : []),
     ["52주 최고가", fmtPrice(s.high52w)], ["52주 최저가", fmtPrice(s.low52w)],
   ];
   $("#facts").innerHTML = facts.map(([k, v]) =>
     `<div class="fact"><div class="fact-k">${k}</div><div class="fact-v">${v}</div></div>`).join("");
-  $("#facts-note").textContent = `재무 지표: 네이버증권 ${String(snapshotAt).slice(0, 10)} 스냅샷` +
+  $("#facts-note").textContent = `재무 지표: ${M.source} ${String(snapshotAt).slice(0, 10)} 스냅샷` +
     (livePrice && shares ? " · 시가총액은 현재가 기준" : "");
 }
 
@@ -140,7 +171,9 @@ function ensureChart() {
     upColor: "#f87171", wickUpColor: "#f87171", borderUpColor: "#f87171",     // 한국 관례: 상승=빨강
     downColor: "#60a5fa", wickDownColor: "#60a5fa", borderDownColor: "#60a5fa",
     // 원화 가격은 소수점 없이 천 단위 구분 (거래량 축은 기본 K/M 표기 유지)
-    priceFormat: { type: "custom", minMove: 1, formatter: (p) => Math.round(p).toLocaleString("ko-KR") },
+    priceFormat: M.currency === "USD" || (stock && stock.price < 100)
+      ? { type: "custom", minMove: 0.0001, formatter: (p) => fmtPrice(p) }
+      : { type: "custom", minMove: 1, formatter: (p) => Math.round(p).toLocaleString("ko-KR") },
   });
   volumeSeries = chart.addHistogramSeries({
     priceFormat: { type: "volume" },
@@ -275,7 +308,7 @@ function boardTime(raw) {
 async function loadBoard() {
   const el = $("#board-list");
   try {
-    const body = await (await fetch(`/api/board?code=${code}`)).json();
+    const body = await (await fetch(`/api/board?code=${encodeURIComponent(code)}`)).json();
     if (body.error === "board_unavailable") {
       el.innerHTML = '<li class="muted">토론방 저장소 준비 중입니다</li>';
       return;
@@ -383,8 +416,12 @@ try {
 
 loadInfo().then(() => {
   loadChart("day");
-  loadFeed("disclosure", "#disclosure-list");
-  loadFeed("news", "#news-list");
+  if (market === "KR") {
+    loadFeed("disclosure", "#disclosure-list");
+    loadFeed("news", "#news-list");
+  } else {
+    $("#feeds").hidden = true;            // 해외·코인은 공시·뉴스를 수집하지 않는다
+  }
   loadBoard();
 });
 setInterval(refreshQuote, 30_000);
