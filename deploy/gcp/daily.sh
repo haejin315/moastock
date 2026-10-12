@@ -3,6 +3,7 @@
 # VM crontab (VM 시간대는 UTC): 15:20·21:00 KST = 06:20·12:00 UTC
 #   20 6 * * *  bash ~/moastock/deploy/gcp/daily.sh
 #   0 12 * * *  bash ~/moastock/deploy/gcp/daily.sh
+#   @reboot sleep 600 && bash ~/moastock/deploy/gcp/daily.sh   (스팟 회수 뒤 다시 켜지면 끊긴 수집 이어서)
 set -u
 cd "$(dirname "$0")"
 # /data/rag 는 root 소유라 로그 폴더는 sudo 로 만들고 cron 사용자에게 넘긴다
