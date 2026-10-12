@@ -26,7 +26,7 @@ jobs:
       - name: Build global (US·JP·coin)
         continue-on-error: true
         run: |
-          pip install --quiet requests selectolax
+          pip install --quiet requests "selectolax>=0.3.27"
           python scripts/build_global.py
       - name: Commit if changed
         run: |

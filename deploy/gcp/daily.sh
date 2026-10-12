@@ -13,4 +13,5 @@ flock -n 9 || { echo "$(date -Is) 이전 실행이 아직 도는 중 - 건너뜀
 echo "== $(date -Is) 시작"
 RUN="sudo docker compose exec -T -e MOARAG_DATA_DIR=/data/rag/daily -w /app/rag assistant python -m"
 $RUN moarag.daily && $RUN moarag.kg_build
-echo "== $(date -Is) 끝 (exit $?)"
+rc=$?
+echo "== $(date -Is) 끝 (exit $rc)"

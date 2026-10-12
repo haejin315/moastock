@@ -27,7 +27,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
-from selectolax.parser import HTMLParser
+from selectolax.lexbor import LexborHTMLParser as HTMLParser  # modest 백엔드는 selectolax 1.0에서 제거됨
 
 OUT = Path(__file__).resolve().parents[1] / "public" / "data"
 KST = timezone(timedelta(hours=9))

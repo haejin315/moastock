@@ -14,7 +14,7 @@ import asyncio
 import re
 from datetime import datetime
 
-from selectolax.parser import HTMLParser
+from selectolax.lexbor import LexborHTMLParser as HTMLParser  # modest 백엔드는 selectolax 1.0에서 제거됨
 
 from .config import KST
 from .http import Fetcher

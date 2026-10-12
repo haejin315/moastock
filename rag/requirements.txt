@@ -2,7 +2,7 @@
 torch
 sentence-transformers
 aiohttp
-selectolax
+selectolax>=0.3.27
 pyahocorasick
 datasketch>=2.0
 pyarrow
