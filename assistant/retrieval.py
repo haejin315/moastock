@@ -14,8 +14,8 @@ import numpy as np
 import psycopg
 from pgvector.psycopg import register_vector
 
-from config import (EVIDENCE_CHARS, EVIDENCE_MAX, KEYWORD_CANDIDATES, PG_DSN, RERANK_URL, SEARCH_CANDIDATES,
-                    TABLE_CHARS, TABLE_MAX)
+from config import (EVIDENCE_CHARS, EVIDENCE_MAX, GRAPH_CANDIDATES, GRAPH_EVIDENCE, GRAPH_EVIDENCE_REL, GRAPH_EXPAND,
+                    GRAPH_NEIGHBORS, KEYWORD_CANDIDATES, PG_DSN, RERANK_URL, SEARCH_CANDIDATES, TABLE_CHARS, TABLE_MAX)
 
 KST = timezone(timedelta(hours=9))
 _local = threading.local()
@@ -85,12 +85,13 @@ class Evidence:
     source_type: str
     report_nm: str | None
     kind: str = "text"               # text(문단) | table(공시 표)
+    via: str | None = None           # 관계 그래프로 넓혀 찾은 문서면 '삼성전자의 계열회사 삼성SDI'
 
     def citation(self) -> dict:
         return {"n": self.n, "title": self.title, "publisher": self.publisher,
                 "published_at": self.published_at.astimezone(KST).strftime("%Y-%m-%d") if self.published_at else None,
                 "url": self.url, "original_url": self.original_url, "type": self.source_type,
-                "report": self.report_nm, "kind": self.kind}
+                "report": self.report_nm, "kind": self.kind, "via": self.via}
 
 
 def clip(content: str, kind: str) -> str:
@@ -157,10 +158,11 @@ def rerank(query: str, rows: list, titles: dict) -> list | None:
         return None
 
 
-def search(query: str, *, stocks: list[str] | None = None, since_days: int | None = None,
-           period: tuple[datetime, datetime] | None = None,
-           source: str | None = None, limit: int = EVIDENCE_MAX) -> list[Evidence]:
-    vec = encoder().encode([f"query: {query}"], batch=1)[0].astype(np.float32)
+# 관계·영향을 묻는 질문이면 연결 회사 근거를 더 많이 허용
+RELATIONAL = re.compile(r"자회사|종속|계열|그룹|지분|모회사|지주|관계사|영향|연결|협력|주주")
+
+
+def _filters(stocks, since_days, period, source) -> tuple[list[str], list]:
     where, args = [], []
     if stocks:
         where.append("stock_codes && %s::text[]"); args.append(stocks)
@@ -170,13 +172,25 @@ def search(query: str, *, stocks: list[str] | None = None, since_days: int | Non
         where.append("published_at >= %s"); args.append(datetime.now(KST) - timedelta(days=since_days))
     if source in ("news", "dart"):
         where.append("source_type = %s"); args.append(source)
-    conn()
+    return where, args
+
+
+def _vector(vec, where: list[str], args: list, limit: int) -> list:
     kind_col = "kind" if _local.has_kind else "'text'"
     sql = (f"SELECT chunk_id, doc_id, content, published_at, source_type, 1 - (embedding <=> %s) AS score, "
            f"{kind_col} AS kind "
            f"FROM chunk {'WHERE ' + ' AND '.join(where) if where else ''} "
-           f"ORDER BY embedding <=> %s LIMIT {SEARCH_CANDIDATES}")
-    rows = conn().execute(sql, (vec, *args, vec)).fetchall()
+           f"ORDER BY embedding <=> %s LIMIT {int(limit)}")
+    return conn().execute(sql, (vec, *args, vec)).fetchall()
+
+
+def search(query: str, *, stocks: list[str] | None = None, since_days: int | None = None,
+           period: tuple[datetime, datetime] | None = None,
+           source: str | None = None, limit: int = EVIDENCE_MAX) -> list[Evidence]:
+    vec = encoder().encode([f"query: {query}"], batch=1)[0].astype(np.float32)
+    where, args = _filters(stocks, since_days, period, source)
+    conn()
+    rows = _vector(vec, where, args, SEARCH_CANDIDATES)
     # 종목이 정해진 질문은 핵심어가 그대로 들어간 청크도 후보에 넣는다 (작은 임베딩 모델은 비슷한 숫자 표·
     # 항목명을 잘 못 가른다). 표는 따로 TABLE_MAX개를 맨 앞에 - 리랭커가 없을 때도 표 질문이 맞게.
     lexical = []
@@ -184,22 +198,51 @@ def search(query: str, *, stocks: list[str] | None = None, since_days: int | Non
         if source != "news":
             lexical += keyword_hits(query, vec, where, args, kind="table", limit=TABLE_MAX)
         lexical += keyword_hits(query, vec, where, args, kind=None, limit=KEYWORD_CANDIDATES)
+    # 관계 그래프로 넓히기: 질문 종목과 바로 이어진 상장사(종속·지배·최대주주·계열)의 문서도 후보로
+    nb = {}
+    if stocks and GRAPH_EXPAND:
+        import kg
+        nb = kg.neighbors(stocks, GRAPH_NEIGHBORS)
+        if nb:
+            nwhere, nargs = _filters(list(nb), since_days, period, source)
+            rows = rows + _vector(vec, nwhere, nargs, GRAPH_CANDIDATES)
     seen, merged = set(), []
     for r in lexical + rows:
         if r[0] not in seen:
             seen.add(r[0]); merged.append(r)
     rows = merged
-    titles = {d[0]: d[1] for d in conn().execute("SELECT doc_id, title FROM doc WHERE doc_id = ANY(%s)",
-                                                 (list({r[1] for r in rows}),)).fetchall()} if rows else {}
+    meta = {d[0]: d[1:] for d in conn().execute("SELECT doc_id, title, stock_codes FROM doc WHERE doc_id = ANY(%s)",
+                                                (list({r[1] for r in rows}),)).fetchall()} if rows else {}
+    titles = {k: v[0] for k, v in meta.items()}
     rows = rerank(query, rows, titles) or rows
 
-    # 문서당 최대 2개 - 한 기사에 근거가 쏠리지 않게. 공시 표 청크는 전체에서 TABLE_MAX개까지
-    picked, per_doc, tables = [], {}, 0
+    # 그래프 거리 가중치: 질문 종목의 문서는 그대로, 연결 회사만 나오는 문서는 관계 가중치를 곱해 뒤로
+    via = {}
+    if nb:
+        def weight(doc_id):
+            codes = set(meta.get(doc_id, (None, []))[1] or [])
+            if codes & set(stocks):
+                return 1.0
+            hits = [nb[c] for c in codes if c in nb]
+            if not hits:
+                return 1.0
+            name, label, w = max(hits, key=lambda h: h[2])
+            via[doc_id] = f"질문 종목의 {label} {name}"
+            return w
+        rows = sorted(rows, key=lambda r: -float(r[5]) * weight(r[1]))
+    graph_max = GRAPH_EVIDENCE_REL if RELATIONAL.search(query) else GRAPH_EVIDENCE
+
+    # 문서당 최대 2개 - 한 기사에 근거가 쏠리지 않게. 공시 표 청크는 전체에서 TABLE_MAX개까지,
+    # 연결 회사 문서는 graph_max 개까지 (질문 종목 근거를 밀어내지 않게)
+    picked, per_doc, tables, linked = [], {}, 0, 0
     for r in rows:
         if per_doc.get(r[1], 0) >= 2 or (r[6] == "table" and tables >= TABLE_MAX):
             continue
+        if r[1] in via and linked >= graph_max:
+            continue
         per_doc[r[1]] = per_doc.get(r[1], 0) + 1
         tables += r[6] == "table"
+        linked += r[1] in via
         picked.append(r)
         if len(picked) >= limit:
             break
@@ -213,5 +256,5 @@ def search(query: str, *, stocks: list[str] | None = None, since_days: int | Non
         d = docs.get(did, (did, did, None, "", None, None))
         out.append(Evidence(n=i, chunk_id=str(cid), doc_id=did, text=clip(content, kind), score=float(score),
                             title=d[1], publisher=d[2], published_at=pub, url=d[3], original_url=d[4],
-                            source_type=stype, report_nm=d[5], kind=kind))
+                            source_type=stype, report_nm=d[5], kind=kind, via=via.get(did)))
     return out

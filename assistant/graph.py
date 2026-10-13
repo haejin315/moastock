@@ -280,6 +280,8 @@ ANSWER_SYS = """너는 모아스톡의 AI 비서다. 아래 [근거]만 사용�
 7. (모아스톡 데이터: 시세·지표·주가 흐름·조건 검색·회사 관계) 근거에 적힌 기준 시각·기준일을 함께 밝힌다.
    예: "10월 8일 11시 2분 기준 삼성전자 현재가는 268,500원이다[1]." 지표나 등락을 근거로 사라·팔라는 판단은 하지 않는다.
    조건 검색 결과는 '조건에 맞는 종목 목록'이라고 소개하고, 추천이라고 표현하지 않는다.
+8. 근거에 '질문 종목의 종속회사/계열회사 … 자료'라고 적힌 것은 질문한 회사가 아니라 연결된 회사의 자료다.
+   그 내용을 쓸 때는 "계열회사 삼성SDI는 …"처럼 어느 회사의 이야기인지 밝히고, 질문한 회사의 수치처럼 쓰지 않는다.
 형식 예시: "8월 10일 공시에 따르면 회사는 50억원 규모의 전환사채 발행을 결정했다[1]. 전환가액은 1주당 3,200원이다[1]."
 인용 번호 없이 끝나는 문장은 쓰지 않는다."""
 
@@ -313,11 +315,12 @@ def evidence_block(ev: list[Evidence]) -> str:
             when = f", {e.published_at:%Y-%m-%d %H:%M} 기준" if e.published_at else ""
             out.append(f"[{e.n}] (모아스톡 데이터{when}) {e.title}\n{e.text}")
             continue
+        rel = f", {e.via} 자료" if e.via else ""    # 관계 그래프로 넓혀 찾은 연결 회사 문서
         if e.kind == "table":            # 표는 단위가 '(단위 : 백만원)' 등으로 따로 있어 원 단위 환산을 붙이지 않는다
-            out.append(f"[{e.n}] (공시 표, {date}, {e.publisher or '-'}) {e.title}\n{e.text}")
+            out.append(f"[{e.n}] (공시 표, {date}, {e.publisher or '-'}{rel}) {e.title}\n{e.text}")
             continue
         kind = "공시" if e.source_type == "dart" else "뉴스"
-        out.append(f"[{e.n}] ({kind}, {date}, {e.publisher or '-'}) {e.title}\n{with_korean_units(e.text)}")
+        out.append(f"[{e.n}] ({kind}, {date}, {e.publisher or '-'}{rel}) {e.title}\n{with_korean_units(e.text)}")
     return "\n\n".join(out)
 
 

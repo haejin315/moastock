@@ -243,7 +243,8 @@ function aiMsgNode(m) {
       h("summary", {}, `출처 ${m.sources.length}건`),
       h("ol", {}, m.sources.map((s) => h("li", { value: s.n },
         h("a", { href: s.url, target: "_blank", rel: "noopener" }, s.title),
-        h("span.muted", {}, ` · ${s.type === "dart" ? "공시" : s.publisher || "뉴스"} · ${s.published_at || ""}`),
+        h("span.muted", {}, ` · ${s.type === "dart" ? "공시" : s.publisher || "뉴스"} · ${s.published_at || ""}` +
+          (s.via ? ` · ${s.via.replace("질문 종목의 ", "")} 관련` : "")),
         s.original_url ? h("a.ai-orig", { href: s.original_url, target: "_blank", rel: "noopener" }, " 원문") : null)))));
   }
   if (m.done && m.checks && m.checks.numbers !== undefined) {

@@ -25,6 +25,13 @@ EVIDENCE_MAX = 6              # 답변에 넣는 근거 청크 수
 EVIDENCE_CHARS = 700          # 근거 하나당 최대 글자
 TABLE_MAX = 2                 # 근거 중 공시 표 청크는 최대 N개 (숫자 표가 문단 근거를 밀어내지 않게)
 TABLE_CHARS = 1000            # 표 청크는 행 단위로 이 글자 수까지
+# 관계 그래프로 검색 넓히기: 질문 종목과 연결된 상장사(종속·지배·최대주주·계열)의 문서도 후보에 넣고,
+# 연결이 멀수록 점수를 깎는다. 관계·영향을 묻는 질문이 아니면 연결 회사 근거는 조금만
+GRAPH_EXPAND = os.environ.get("ASSIST_GRAPH_EXPAND", "1") != "0"
+GRAPH_NEIGHBORS = 8           # 연결 회사 최대 N곳 (가까운 관계 먼저)
+GRAPH_CANDIDATES = 20         # 연결 회사 문서 벡터 후보
+GRAPH_EVIDENCE = 2            # 근거 중 연결 회사 문서 최대 (관계·영향 질문은 GRAPH_EVIDENCE_REL)
+GRAPH_EVIDENCE_REL = 4
 DEFAULT_DAYS = 120            # 기간을 말하지 않으면 최근 N일
 ANSWER_MAX_TOKENS = 700
 

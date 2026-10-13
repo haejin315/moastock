@@ -34,6 +34,41 @@ def _chain(start: str, depth: int = 3) -> list[str]:
     return out
 
 
+# 검색 넓히기용 이웃: (관계, 방향) → (이름표, 가중치). 방향 True = 질문 종목이 src
+NEIGHBOR_REL = {("종속회사", True): ("종속회사", 0.85), ("종속회사", False): ("지배회사", 0.85),
+                ("최대주주", True): ("최대주주", 0.85), ("최대주주", False): ("출자회사", 0.8),
+                ("최대주주등", True): ("주요주주", 0.8), ("최대주주등", False): ("출자회사", 0.75),
+                ("계열회사", True): ("계열회사", 0.7), ("계열회사", False): ("계열회사", 0.7)}
+
+
+def neighbors(codes: list[str], limit: int = 8) -> dict[str, tuple[str, str, float]]:
+    """질문 종목과 그래프로 바로 이어진 상장사 → {종목코드: (회사명, 관계 이름표, 가중치)}.
+    한 회사가 여러 관계로 이어지면 가중치가 큰 관계 하나. 가까운 관계 먼저 limit 곳."""
+    if not codes:
+        return {}
+    try:
+        rows = conn().execute(
+            "SELECT src_code, src_name, rel, dst_code, dst_name, rank FROM kg_edge "
+            "WHERE rel IN ('종속회사', '최대주주', '최대주주등', '계열회사') AND dst_code IS NOT NULL "
+            "AND src_code IS NOT NULL AND src_code <> dst_code AND (src_code = ANY(%s) OR dst_code = ANY(%s))",
+            (codes, codes)).fetchall()
+    except Exception as e:                      # 그래프를 아직 안 만든 DB
+        print(f"[kg] 이웃 조회 실패: {e!r}", flush=True)
+        return {}
+    best: dict[str, tuple[str, str, float, int]] = {}
+    for src, src_name, rel, dst, dst_name, rank in rows:
+        fwd = src in codes
+        code, name = (dst, dst_name) if fwd else (src, src_name)
+        if code in codes:
+            continue
+        label, w = NEIGHBOR_REL[(rel, fwd)]
+        cur = best.get(code)
+        if cur is None or (w, -(rank or 0)) > (cur[2], -cur[3]):
+            best[code] = (name, label, w, rank or 0)
+    top = sorted(best.items(), key=lambda kv: (-kv[1][2], kv[1][3]))[:limit]
+    return {c: v[:3] for c, v in top}
+
+
 def _fmt(rel: str, rows) -> list[str]:
     lines = []
     for src, dst, props, *_ in rows:
