@@ -208,15 +208,19 @@ def find_docs(state: State) -> tuple[list[Evidence], list[str]]:
     period = state.get("period")
     recent = bool(RECENT.search(state["question"])) and not period
     ev = search(q, stocks=stocks, since_days=days, period=period, source=source, recent=recent)
-    # 못 찾으면 조건을 하나씩 풀어 다시 (풀었다는 사실은 답변에 알린다)
-    if len(ev) < 2 and source:
-        ev = search(q, stocks=stocks, since_days=days, period=period); notes.append("자료 종류 조건을 넓혀 찾았습니다")
-    if len(ev) < 2 and period:
+    # 못 찾으면 조건을 하나씩 풀어 다시 (풀었다는 사실은 답변에 알린다). 연결 회사 근거만 있으면 못 찾은 것으로 본다
+    def few(ev):
+        return sum(1 for e in ev if not e.via) < 2
+
+    if few(ev) and days < DEFAULT_DAYS and not period:      # '최근 공시'인데 2주 안에 없으면 기간부터 넓힌다
+        ev = search(q, stocks=stocks, since_days=DEFAULT_DAYS, source=source, recent=recent)
+        notes.append(f"최근 {days}일 자료가 적어 {DEFAULT_DAYS}일로 넓혀 찾았습니다"); days = DEFAULT_DAYS
+    if few(ev) and source:
+        ev = search(q, stocks=stocks, since_days=days, period=period, recent=recent)
+        notes.append("자료 종류 조건을 넓혀 찾았습니다")
+    if few(ev) and period:
         ev = search(q, stocks=stocks, since_days=days); notes.append("말씀하신 달에서 찾지 못해 최근 기간으로 넓혔습니다")
-    if len(ev) < 2 and days < DEFAULT_DAYS:
-        ev = search(q, stocks=stocks, since_days=DEFAULT_DAYS, recent=recent)
-        notes.append(f"최근 {days}일 자료가 적어 {DEFAULT_DAYS}일로 넓혀 찾았습니다")
-    if len(ev) < 2 and days:
+    if few(ev) and days:
         ev = search(q, stocks=stocks, since_days=None, recent=recent); notes.append("기간 조건을 넓혀 찾았습니다")
     return ev, notes
 

@@ -185,6 +185,20 @@ def _vector(vec, where: list[str], args: list, limit: int) -> list:
     return conn().execute(sql, (vec, *args, vec)).fetchall()
 
 
+def _latest(vec, stocks, since_days, source, n: int = 10) -> list:
+    """'최근' 질문용: 종목의 가장 새 문서 n건에서 질문과 가장 가까운 조각 하나씩 (관련도 상위에 못 든 새 공시도 후보로)"""
+    dw, da = _filters(stocks, since_days, None, source)
+    ids = [r[0] for r in conn().execute(
+        f"SELECT doc_id FROM doc WHERE {' AND '.join(dw)} ORDER BY published_at DESC LIMIT {int(n)}", da).fetchall()]
+    if not ids:
+        return []
+    kind_col = "kind" if _local.has_kind else "'text'"
+    return conn().execute(
+        f"SELECT DISTINCT ON (doc_id) chunk_id, doc_id, content, published_at, source_type, "
+        f"1 - (embedding <=> %s) AS score, {kind_col} AS kind FROM chunk WHERE doc_id = ANY(%s) "
+        f"ORDER BY doc_id, embedding <=> %s", (vec, ids, vec)).fetchall()
+
+
 def search(query: str, *, stocks: list[str] | None = None, since_days: int | None = None,
            period: tuple[datetime, datetime] | None = None,
            source: str | None = None, recent: bool = False, limit: int = EVIDENCE_MAX) -> list[Evidence]:
@@ -199,6 +213,8 @@ def search(query: str, *, stocks: list[str] | None = None, since_days: int | Non
         if source != "news":
             lexical += keyword_hits(query, vec, where, args, kind="table", limit=TABLE_MAX)
         lexical += keyword_hits(query, vec, where, args, kind=None, limit=KEYWORD_CANDIDATES)
+    if recent and stocks:
+        rows = rows + _latest(vec, stocks, since_days, source)
     # 관계 그래프로 넓히기: 질문 종목과 바로 이어진 상장사(종속·지배·최대주주·계열)의 문서도 후보로
     nb = {}
     if stocks and GRAPH_EXPAND:
@@ -233,12 +249,13 @@ def search(query: str, *, stocks: list[str] | None = None, since_days: int | Non
     else:
         def weight(doc_id):
             return 1.0
-    # '최근 소식' 질문: 관련도가 비슷하면 새 자료 먼저 (오늘 1.0 → 1주 전 0.75 → 오래될수록 0.6에 수렴)
-    now = datetime.now(KST)
+    # '최근 소식' 질문: 관련도가 비슷하면 새 자료 먼저 (오늘 1.0 → 오래될수록 0.6에 수렴).
+    # 2주 창이면 1주마다, 넓혀 찾은 경우엔 기간의 1/4마다 줄어든다 (120일 창에서도 9월 공시가 8월 공시보다 앞서게)
+    now, tau = datetime.now(KST), max(7, (since_days or 365) / 4)
     def fresh(pub):
         if not recent or pub is None:
             return 1.0
-        return 0.6 + 0.4 * math.exp(-max((now - pub).total_seconds(), 0) / 86400 / 7)
+        return 0.6 + 0.4 * math.exp(-max((now - pub).total_seconds(), 0) / 86400 / tau)
     if nb or recent:
         rows = sorted(rows, key=lambda r: -float(r[5]) * weight(r[1]) * fresh(r[3]))
     graph_max = GRAPH_EVIDENCE_REL if RELATIONAL.search(query) else GRAPH_EVIDENCE
