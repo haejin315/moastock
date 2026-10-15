@@ -30,7 +30,7 @@ spec:
           ports: [{ containerPort: 8000 }]
           resources:
             requests: { cpu: 200m, memory: 4Gi }
-            limits: { nvidia.com/gpu: 1, memory: 14Gi }
+            limits: { nvidia.com/gpu: 1, memory: 18Gi }   # 모델 파일 캐시까지 세어 13GB 안팎
           volumeMounts:
             - { name: hf, mountPath: /root/.cache/huggingface }
             - { name: vllm-cache, mountPath: /root/.cache/vllm }   # torch.compile 결과 - 재시작이 몇 분 빨라진다
