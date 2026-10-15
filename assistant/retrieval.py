@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import math
 import re
 import threading
 from dataclasses import dataclass
@@ -186,7 +187,7 @@ def _vector(vec, where: list[str], args: list, limit: int) -> list:
 
 def search(query: str, *, stocks: list[str] | None = None, since_days: int | None = None,
            period: tuple[datetime, datetime] | None = None,
-           source: str | None = None, limit: int = EVIDENCE_MAX) -> list[Evidence]:
+           source: str | None = None, recent: bool = False, limit: int = EVIDENCE_MAX) -> list[Evidence]:
     vec = encoder().encode([f"query: {query}"], batch=1)[0].astype(np.float32)
     where, args = _filters(stocks, since_days, period, source)
     conn()
@@ -229,7 +230,17 @@ def search(query: str, *, stocks: list[str] | None = None, since_days: int | Non
             name, label, w = max(hits, key=lambda h: h[2])
             via[doc_id] = f"질문 종목의 {label} {name}"
             return w
-        rows = sorted(rows, key=lambda r: -float(r[5]) * weight(r[1]))
+    else:
+        def weight(doc_id):
+            return 1.0
+    # '최근 소식' 질문: 관련도가 비슷하면 새 자료 먼저 (오늘 1.0 → 1주 전 0.75 → 오래될수록 0.6에 수렴)
+    now = datetime.now(KST)
+    def fresh(pub):
+        if not recent or pub is None:
+            return 1.0
+        return 0.6 + 0.4 * math.exp(-max((now - pub).total_seconds(), 0) / 86400 / 7)
+    if nb or recent:
+        rows = sorted(rows, key=lambda r: -float(r[5]) * weight(r[1]) * fresh(r[3]))
     graph_max = GRAPH_EVIDENCE_REL if RELATIONAL.search(query) else GRAPH_EVIDENCE
 
     # 문서당 최대 2개 - 한 기사에 근거가 쏠리지 않게. 공시 표 청크는 전체에서 TABLE_MAX개까지,

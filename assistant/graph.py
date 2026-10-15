@@ -49,9 +49,12 @@ class State(TypedDict, total=False):
 
 # ---- 1. 질문 해석 ---------------------------------------------------------------------
 
+# '최근 소식'·'요즘'처럼 기간 없이 최신 자료를 원하는 질문: 2주로 좁히고 새 자료일수록 점수를 더 준다
+RECENT = re.compile(r"최근\s*(?:소식|뉴스|기사|동향|이슈|근황|공시|발표|이야기|상황)|요즘|근황|최신\s*(?:소식|뉴스|기사|동향|공시)")
 _PERIOD = [(r"오늘|금일", 2), (r"어제|전일", 3), (r"이번\s*주|최근\s*일주일|지난\s*주", 10),
            (r"이번\s*달|한\s*달|최근\s*1\s*개월|지난\s*달", 35), (r"최근\s*(\d+)\s*일", None),
-           (r"최근\s*(\d+)\s*주", None), (r"최근\s*(\d+)\s*개월", None), (r"올해|연초", 280)]
+           (r"최근\s*(\d+)\s*주", None), (r"최근\s*(\d+)\s*개월", None), (r"올해|연초", 280),
+           (RECENT.pattern, 14)]
 
 
 def parse_month(q: str, now: datetime | None = None):
@@ -203,14 +206,18 @@ def find_docs(state: State) -> tuple[list[Evidence], list[str]]:
     notes = []
     q = state.get("query") or state["question"]
     period = state.get("period")
-    ev = search(q, stocks=stocks, since_days=days, period=period, source=source)
+    recent = bool(RECENT.search(state["question"])) and not period
+    ev = search(q, stocks=stocks, since_days=days, period=period, source=source, recent=recent)
     # 못 찾으면 조건을 하나씩 풀어 다시 (풀었다는 사실은 답변에 알린다)
     if len(ev) < 2 and source:
         ev = search(q, stocks=stocks, since_days=days, period=period); notes.append("자료 종류 조건을 넓혀 찾았습니다")
     if len(ev) < 2 and period:
         ev = search(q, stocks=stocks, since_days=days); notes.append("말씀하신 달에서 찾지 못해 최근 기간으로 넓혔습니다")
+    if len(ev) < 2 and days < DEFAULT_DAYS:
+        ev = search(q, stocks=stocks, since_days=DEFAULT_DAYS, recent=recent)
+        notes.append(f"최근 {days}일 자료가 적어 {DEFAULT_DAYS}일로 넓혀 찾았습니다")
     if len(ev) < 2 and days:
-        ev = search(q, stocks=stocks, since_days=None); notes.append("기간 조건을 넓혀 찾았습니다")
+        ev = search(q, stocks=stocks, since_days=None, recent=recent); notes.append("기간 조건을 넓혀 찾았습니다")
     return ev, notes
 
 
