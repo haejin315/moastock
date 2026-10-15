@@ -11,3 +11,11 @@ assistant/eval/results/
 assistant/__pycache__/
 __pycache__/
 *.pyc
+
+# k3s·Airflow·Kubeflow: VM 비밀값, 빌드 산출물
+deploy/gcp/.env
+deploy/gcp/observability.env
+pipelines/compiled/
+deploy/airflow/dags/pipelines/
+analytics/target/
+analytics/logs/

@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from config import LLM_BASE_URL, LLM_MODEL  # noqa: E402
 from graph import GRAPH  # noqa: E402
 from retrieval import conn  # noqa: E402
+import observability as obs  # noqa: E402
 
 
 def _norm_report(title: str) -> str:
@@ -38,7 +39,9 @@ def _norm_report(title: str) -> str:
 HERE = Path(__file__).parent
 
 
-def run_one(q):
+@obs.observe(name="eval.question", capture_output=False)
+def run_one(q, tag: str = ""):
+    obs.trace(name="eval.question", input=q["question"], tags=["eval", tag], metadata={"id": q["id"], "expect": q["expect"]})
     t0 = time.perf_counter()
     out = {"tokens": [], "evidence": [], "checks": {}, "plan": None}
     for ev in GRAPH.stream({"question": q["question"]}, stream_mode="custom"):
@@ -82,6 +85,10 @@ def run_one(q):
             key, month = _norm_report(row[0]), row[1].strftime("%Y-%m")
             res["hit_equiv"] = any(_norm_report(e["title"]) == key and (e["published_at"] or "")[:7] == month
                                    for e in out["evidence"])
+    obs.score("route_ok", float(res["route_ok"]))
+    if "hit" in res:
+        obs.score("dart_hit", float(res["hit"]))
+        obs.score("dart_hit_cited", float(res["hit_cited"]))
     return res
 
 
@@ -114,22 +121,24 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int)
     ap.add_argument("--tag", default=datetime.now().strftime("%Y%m%d-%H%M"))
+    ap.add_argument("--out", help="결과 파일 경로 (기본 eval/results/<tag>.json, Kubeflow 파이프라인은 출력 아티팩트 경로)")
     a = ap.parse_args()
     qs = [json.loads(l) for l in (HERE / "questions.jsonl").read_text(encoding="utf-8").splitlines() if l.strip()]
     if a.limit:
         qs = qs[: a.limit]
     rs = []
     for i, q in enumerate(qs, 1):
-        r = run_one(q)
+        r = run_one(q, a.tag)
         rs.append(r)
         flag = "✓" if r["route_ok"] and r.get("hit", True) else "✗"
         print(f"[{i}/{len(qs)}] {flag} {r['id']} {r['route']} {r['ms']/1000:.1f}s hit={r.get('hit')} "
               f"cite={r['checks'].get('citations')} num={r['checks'].get('numbers_supported')}/{r['checks'].get('numbers')}",
               flush=True)
     s = summarize(rs)
-    (HERE / "results").mkdir(exist_ok=True)
-    out = HERE / "results" / f"{a.tag}.json"
+    out = Path(a.out) if a.out else HERE / "results" / f"{a.tag}.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps({"model": LLM_MODEL, "base_url": LLM_BASE_URL, "summary": s, "results": rs},
                               ensure_ascii=False, indent=1, default=str), encoding="utf-8")
     print(json.dumps(s, ensure_ascii=False, indent=1))
     print("저장:", out)
+    obs.flush()

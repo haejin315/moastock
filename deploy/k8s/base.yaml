@@ -1,0 +1,43 @@
+# 클러스터 바탕: 네임스페이스, NVIDIA 장치 플러그인(시간 분할).
+# k3s 는 VM 의 Docker 엔진을 그대로 쓰고(--docker), Docker 기본 런타임이 nvidia 라 RuntimeClass 가 따로 없다.
+# T4 한 장을 llm·embed·rerank 가 같이 쓰도록 nvidia.com/gpu 를 4개로 나눠 보이게 한다 (메모리 격리는 없다 -
+# vLLM 0.74 + 임베딩 ~0.7GB + 리랭커 ~1.5GB 로 16GB 안에 들어가게 각 서비스 설정에서 맞춘다).
+apiVersion: v1
+kind: Namespace
+metadata: { name: moastock }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: nvidia-device-plugin-config, namespace: kube-system }
+data:
+  config.yaml: |
+    version: v1
+    sharing:
+      timeSlicing:
+        resources:
+          - name: nvidia.com/gpu
+            replicas: 4
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata: { name: nvidia-device-plugin, namespace: kube-system }
+spec:
+  selector: { matchLabels: { name: nvidia-device-plugin } }
+  updateStrategy: { type: RollingUpdate }
+  template:
+    metadata: { labels: { name: nvidia-device-plugin } }
+    spec:
+      priorityClassName: system-node-critical
+      tolerations: [{ key: nvidia.com/gpu, operator: Exists, effect: NoSchedule }]
+      containers:
+        - name: nvidia-device-plugin-ctr
+          image: nvcr.io/nvidia/k8s-device-plugin:v0.17.0
+          args: [--config-file=/config/config.yaml]
+          env: [{ name: FAIL_ON_INIT_ERROR, value: "false" }]
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] } }
+          volumeMounts:
+            - { name: device-plugin, mountPath: /var/lib/kubelet/device-plugins }
+            - { name: config, mountPath: /config }
+      volumes:
+        - { name: device-plugin, hostPath: { path: /var/lib/kubelet/device-plugins } }
+        - { name: config, configMap: { name: nvidia-device-plugin-config } }

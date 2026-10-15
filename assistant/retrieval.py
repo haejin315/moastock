@@ -15,6 +15,7 @@ import numpy as np
 import psycopg
 from pgvector.psycopg import register_vector
 
+import observability as obs
 from config import (EVIDENCE_CHARS, EVIDENCE_MAX, GRAPH_CANDIDATES, GRAPH_EVIDENCE, GRAPH_EVIDENCE_REL, GRAPH_EXPAND,
                     GRAPH_NEIGHBORS, KEYWORD_CANDIDATES, PG_DSN, RERANK_URL, SEARCH_CANDIDATES, TABLE_CHARS, TABLE_MAX)
 
@@ -140,6 +141,7 @@ def keyword_hits(query: str, vec, where: list[str], args: list, *, kind: str | N
 _http = None
 
 
+@obs.observe(name="rerank", capture_input=False, capture_output=False)
 def rerank(query: str, rows: list, titles: dict) -> list | None:
     """교차 인코더(bge-reranker-v2-m3, TEI)로 후보를 다시 매긴다. 서버가 없거나 실패하면 None."""
     global _http
@@ -199,6 +201,7 @@ def _latest(vec, stocks, since_days, source, n: int = 10) -> list:
         f"ORDER BY doc_id, embedding <=> %s", (vec, ids, vec)).fetchall()
 
 
+@obs.observe(name="retrieval.search", capture_output=False)
 def search(query: str, *, stocks: list[str] | None = None, since_days: int | None = None,
            period: tuple[datetime, datetime] | None = None,
            source: str | None = None, recent: bool = False, limit: int = EVIDENCE_MAX) -> list[Evidence]:
@@ -274,6 +277,8 @@ def search(query: str, *, stocks: list[str] | None = None, since_days: int | Non
         picked.append(r)
         if len(picked) >= limit:
             break
+    obs.span(metadata={"candidates": len(rows), "neighbors": len(nb), "recent": recent},
+             output=[{"doc_id": r[1], "score": round(float(r[5]), 4), "kind": r[6], "via": via.get(r[1])} for r in picked])
     if not picked:
         return []
     docs = {d[0]: d for d in conn().execute(

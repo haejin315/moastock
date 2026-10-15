@@ -1,0 +1,12 @@
+moastock:
+  target: prod
+  outputs:
+    prod:
+      type: postgres
+      host: "{{ env_var('DBT_PG_HOST', 'db') }}"
+      port: 5432
+      user: "{{ env_var('DBT_PG_USER', 'moarag') }}"
+      password: "{{ env_var('DBT_PG_PASSWORD', 'moarag') }}"
+      dbname: "{{ env_var('DBT_PG_DB', 'moarag') }}"
+      schema: analytics
+      threads: 2

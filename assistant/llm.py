@@ -11,6 +11,7 @@ import re
 from openai import OpenAI
 
 from config import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
+from observability import generation, observe
 
 _client = OpenAI(base_url=LLM_BASE_URL, api_key=LLM_API_KEY, timeout=600)
 
@@ -23,9 +24,13 @@ def _extra(think: bool) -> dict:
 _THINK = re.compile(r"<think>[\s\S]*?</think>\s*", re.I)
 
 
+@observe(name="llm.complete", as_type="generation", capture_input=False)
 def complete(messages, *, max_tokens=400, temperature=0.2, think=False) -> str:
     r = _client.chat.completions.create(model=LLM_MODEL, messages=messages, max_tokens=max_tokens,
                                         temperature=temperature, extra_body=_extra(think))
+    if r.usage:
+        generation(model=LLM_MODEL, input=messages, model_parameters={"max_tokens": max_tokens, "temperature": temperature},
+                   usage_details={"input": r.usage.prompt_tokens, "output": r.usage.completion_tokens})
     return _THINK.sub("", r.choices[0].message.content or "").strip()
 
 
@@ -41,12 +46,17 @@ def complete_json(messages, *, max_tokens=300) -> dict:
         return {}
 
 
+@observe(name="llm.stream", as_type="generation", capture_input=False)
 def stream(messages, *, max_tokens=700, temperature=0.2, think=False):
     """답변 토큰을 하나씩 낸다 (생각하기 구간은 걸러낸다)."""
     r = _client.chat.completions.create(model=LLM_MODEL, messages=messages, max_tokens=max_tokens,
-                                        temperature=temperature, stream=True, extra_body=_extra(think))
+                                        temperature=temperature, stream=True, extra_body=_extra(think),
+                                        stream_options={"include_usage": True})
+    generation(model=LLM_MODEL, input=messages, model_parameters={"max_tokens": max_tokens, "temperature": temperature})
     in_think = False
     for chunk in r:
+        if getattr(chunk, "usage", None):          # 마지막 조각에 토큰 수가 온다
+            generation(usage_details={"input": chunk.usage.prompt_tokens, "output": chunk.usage.completion_tokens})
         if not chunk.choices:
             continue
         delta = chunk.choices[0].delta

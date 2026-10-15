@@ -9,3 +9,4 @@ onnxruntime
 transformers
 huggingface-hub
 pyahocorasick
+langfuse>=3.3,<4

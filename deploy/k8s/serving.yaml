@@ -1,0 +1,187 @@
+# AI 비서 서빙 (k3s, 네임스페이스 moastock). docker-compose.yml 을 쿠버네티스로 옮긴 것 - 서비스 이름·포트가 같아서
+# 앱 설정(http://llm:8000, http://embed:80, db:5432 …)은 그대로다.
+#
+#   llm        Qwen3.5 4B, vLLM (OpenAI 호환 API)          :8000
+#   embed      multilingual-e5-small, TEI (임베딩)          :80
+#   rerank     bge-reranker-v2-m3, TEI (리랭커)             :80
+#   db         PostgreSQL 18 + pgvector                    :5432
+#   assistant  LangGraph 오케스트레이터 + cloudflared 사이드카 :8100
+#
+# GPU 한 장(T4)을 llm·embed·rerank 가 나눠 쓴다: NVIDIA 장치 플러그인 시간 분할(gpu.yaml)로 GPU 1장을 4개로 보이게 한다.
+# 데이터는 VM 디스크(/data/*)를 hostPath 로 그대로 쓴다 - 노드가 한 대뿐이라 PV 가 따로 필요 없다.
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: llm, namespace: moastock, labels: { app: llm } }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }              # GPU 메모리를 두 벌 잡지 않게
+  selector: { matchLabels: { app: llm } }
+  template:
+    metadata:
+      labels: { app: llm }
+      annotations: { prometheus.io/scrape: "true", prometheus.io/port: "8000" }
+    spec:
+      containers:
+        - name: vllm
+          image: vllm/vllm-openai:v0.31.0
+          # T4는 BF16이 없어 FP16(half). 이미지 입력은 쓰지 않으므로 언어 모델 부분만 올린다.
+          args: [--model, Qwen/Qwen3.5-4B, --served-model-name, qwen3.5-4b, --dtype, half, --max-model-len, "16384",
+                 --gpu-memory-utilization, "0.74", --max-num-seqs, "16", --language-model-only]
+          ports: [{ containerPort: 8000 }]
+          resources:
+            requests: { cpu: 200m, memory: 4Gi }
+            limits: { nvidia.com/gpu: 1, memory: 14Gi }
+          volumeMounts:
+            - { name: hf, mountPath: /root/.cache/huggingface }
+            - { name: vllm-cache, mountPath: /root/.cache/vllm }   # torch.compile 결과 - 재시작이 몇 분 빨라진다
+            - { name: shm, mountPath: /dev/shm }
+          startupProbe: { httpGet: { path: /health, port: 8000 }, periodSeconds: 10, failureThreshold: 90 }
+          livenessProbe: { httpGet: { path: /health, port: 8000 }, periodSeconds: 30, failureThreshold: 4 }
+      volumes:
+        - { name: hf, hostPath: { path: /data/hf, type: Directory } }
+        - { name: vllm-cache, hostPath: { path: /data/vllm-cache, type: DirectoryOrCreate } }
+        - { name: shm, emptyDir: { medium: Memory, sizeLimit: 2Gi } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: llm, namespace: moastock }
+spec: { selector: { app: llm }, ports: [{ port: 8000, targetPort: 8000 }] }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: embed, namespace: moastock, labels: { app: embed } }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app: embed } }
+  template:
+    metadata:
+      labels: { app: embed }
+      annotations: { prometheus.io/scrape: "true", prometheus.io/port: "80" }
+    spec:
+      containers:
+        - name: tei
+          image: ghcr.io/huggingface/text-embeddings-inference:turing-1.9.4
+          args: [--model-id, intfloat/multilingual-e5-small, --max-client-batch-size, "256", --max-batch-tokens, "65536"]
+          ports: [{ containerPort: 80 }]
+          resources:
+            requests: { cpu: 200m, memory: 1Gi }
+            limits: { nvidia.com/gpu: 1, memory: 4Gi }
+          volumeMounts: [{ name: tei, mountPath: /data }]
+          startupProbe: { httpGet: { path: /health, port: 80 }, periodSeconds: 10, failureThreshold: 60 }
+      volumes: [{ name: tei, hostPath: { path: /data/hf-tei, type: Directory } }]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: embed, namespace: moastock }
+spec: { selector: { app: embed }, ports: [{ port: 80, targetPort: 80 }] }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: rerank, namespace: moastock, labels: { app: rerank } }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app: rerank } }
+  template:
+    metadata:
+      labels: { app: rerank }
+      annotations: { prometheus.io/scrape: "true", prometheus.io/port: "80" }
+    spec:
+      containers:
+        - name: tei
+          image: ghcr.io/huggingface/text-embeddings-inference:turing-1.9.4
+          # 입력 길이 상한 = max-batch-tokens. T4(플래시 어텐션 없음)는 어텐션 메모리가 길이의 제곱이라 2048
+          args: [--model-id, BAAI/bge-reranker-v2-m3, --max-client-batch-size, "64", --max-batch-tokens, "2048",
+                 --auto-truncate]
+          ports: [{ containerPort: 80 }]
+          resources:
+            requests: { cpu: 200m, memory: 1Gi }
+            limits: { nvidia.com/gpu: 1, memory: 4Gi }
+          volumeMounts: [{ name: tei, mountPath: /data }]
+          startupProbe: { httpGet: { path: /health, port: 80 }, periodSeconds: 10, failureThreshold: 60 }
+      volumes: [{ name: tei, hostPath: { path: /data/hf-tei, type: Directory } }]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: rerank, namespace: moastock }
+spec: { selector: { app: rerank }, ports: [{ port: 80, targetPort: 80 }] }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: db, namespace: moastock, labels: { app: db } }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }              # 같은 데이터 폴더를 두 Postgres 가 열지 않게
+  selector: { matchLabels: { app: db } }
+  template:
+    metadata: { labels: { app: db } }
+    spec:
+      containers:
+        - name: postgres
+          image: pgvector/pgvector:0.8.1-pg18
+          args: [postgres, -c, shared_buffers=3GB, -c, effective_cache_size=8GB, -c, maintenance_work_mem=1GB,
+                 -c, max_parallel_maintenance_workers=1, -c, work_mem=64MB, -c, max_wal_size=8GB,
+                 -c, max_connections=150]
+          env:
+            - { name: POSTGRES_USER, value: moarag }
+            - { name: POSTGRES_PASSWORD, value: moarag }
+            - { name: POSTGRES_DB, value: moarag }
+          ports: [{ containerPort: 5432 }]
+          resources: { requests: { cpu: 200m, memory: 4Gi }, limits: { memory: 8Gi } }
+          volumeMounts:
+            - { name: pg, mountPath: /var/lib/postgresql }
+            - { name: dump, mountPath: /dump }
+            - { name: shm, mountPath: /dev/shm }
+          readinessProbe: { exec: { command: [pg_isready, -U, moarag] }, periodSeconds: 10 }
+      volumes:
+        - { name: pg, hostPath: { path: /data/pg, type: Directory } }
+        - { name: dump, hostPath: { path: /data/dump, type: DirectoryOrCreate } }
+        - { name: shm, emptyDir: { medium: Memory, sizeLimit: 2Gi } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: db, namespace: moastock }
+spec: { selector: { app: db }, ports: [{ port: 5432, targetPort: 5432 }] }
+---
+# 오케스트레이터 + cloudflared. 터널(Workers VPC 서비스)의 대상이 127.0.0.1:8100 이라 같은 파드 안에 둔다 -
+# 파드 안에서 127.0.0.1 은 assistant 컨테이너다. 공개 IP로 들어오는 길은 여전히 없다.
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: assistant, namespace: moastock, labels: { app: assistant } }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: assistant } }
+  template:
+    metadata: { labels: { app: assistant } }
+    spec:
+      containers:
+        - name: assistant
+          image: moastock/assistant:current
+          imagePullPolicy: Never              # VM 에서 docker build 한 이미지 (k3s 가 같은 Docker 엔진을 쓴다)
+          env:
+            - { name: ASSIST_LLM_BASE_URL, value: "http://llm:8000/v1" }
+            - { name: ASSIST_PG_DSN, value: "postgresql://moarag:moarag@db:5432/moarag" }
+            - { name: MOARAG_EMBED_URL, value: "http://embed:80" }
+            - { name: ASSIST_RERANK_URL, value: "http://rerank:80" }
+            - { name: MOARAG_PG_DSN, value: "postgresql://moarag:moarag@db:5432/moarag" }
+            - { name: MOARAG_DATA_DIR, value: /data/rag }
+            - { name: ASSIST_SHARED_SECRET, valueFrom: { secretKeyRef: { name: moastock-env, key: ASSIST_SHARED_SECRET } } }
+            - { name: DART_API_KEY, valueFrom: { secretKeyRef: { name: moastock-env, key: DART_API_KEY } } }
+          envFrom:
+            - secretRef: { name: observability, optional: true }   # LANGFUSE_* (키가 들어오면 추적이 켜진다)
+          ports: [{ containerPort: 8100 }]
+          resources: { requests: { cpu: 300m, memory: 1Gi }, limits: { memory: 4Gi } }
+          volumeMounts: [{ name: rag, mountPath: /data/rag }]
+          readinessProbe: { httpGet: { path: /health, port: 8100 }, periodSeconds: 10 }
+        - name: tunnel
+          image: cloudflare/cloudflared:latest
+          args: [tunnel, --no-autoupdate, --metrics, "0.0.0.0:2000", run]
+          env: [{ name: TUNNEL_TOKEN, valueFrom: { secretKeyRef: { name: moastock-env, key: TUNNEL_TOKEN } } }]
+          resources: { requests: { cpu: 50m, memory: 64Mi }, limits: { memory: 256Mi } }
+      volumes: [{ name: rag, hostPath: { path: /data/rag, type: Directory } }]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: assistant, namespace: moastock }
+spec: { selector: { app: assistant }, ports: [{ port: 8100, targetPort: 8100 }] }

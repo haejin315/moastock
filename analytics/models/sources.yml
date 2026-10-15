@@ -1,0 +1,57 @@
+version: 2
+
+sources:
+  - name: moarag
+    schema: public
+    description: 수집 파이프라인(rag/moarag)이 채우는 원천 표
+    tables:
+      - name: doc
+        description: 뉴스·공시 문서 (정제 전문 포함)
+        loaded_at_field: crawled_at
+        freshness:                       # 매일 두 번 수집 - 하루 넘게 새 문서가 없으면 경고, 사흘이면 오류
+          warn_after: { count: 24, period: hour }
+          error_after: { count: 72, period: hour }
+        columns:
+          - name: doc_id
+            data_tests: [unique, not_null]
+          - name: source_type
+            data_tests:
+              - accepted_values: { values: [news, dart] }
+          - name: url
+            data_tests: [not_null]
+      - name: chunk
+        description: 검색 단위 조각 + 임베딩 (300만 행이라 테스트는 최근 3일분만)
+        columns:
+          - name: doc_id
+            data_tests:
+              - relationships:
+                  to: source('moarag', 'doc')
+                  field: doc_id
+                  config: { where: "published_at > now() - interval '3 days'" }
+          - name: kind
+            data_tests:
+              - accepted_values:
+                  values: [text, table]
+                  config: { where: "published_at > now() - interval '3 days'" }
+      - name: kg_edge
+        description: 정기보고서 표에서 뽑은 회사 관계 그래프 (kg_build 가 매일 통째로 다시 만든다)
+        columns:
+          - name: rel
+            data_tests:
+              - accepted_values: { values: [최대주주등, 최대주주, 종속회사, 계열회사, 임원] }
+          - name: doc_id
+            data_tests:
+              - not_null
+              - relationships:
+                  to: source('moarag', 'doc')
+                  field: doc_id
+  - name: spark
+    schema: spark
+    tables:
+      - name: news_comention
+        description: Spark 작업(spark/comention.py) - 최근 N일 뉴스에서 두 종목이 함께 언급된 문서 수와 lift
+  - name: eval
+    schema: eval
+    tables:
+      - name: runs
+        description: Kubeflow 평가 파이프라인(pipelines/rag_eval.py)이 남기는 회차별 요약

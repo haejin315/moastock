@@ -1,0 +1,28 @@
+# 모아스톡 분석 모델 (dbt + Postgres). Airflow DAG moastock_daily 의 dbt_build 작업이 매일 돌린다.
+# 원천 표(doc·chunk·kg_edge)는 수집 코드가 통째로 바꿔 끼우기도 해서(kg_edge, apply_delta) 그 위에 뷰를 두지 않는다 -
+# staging 은 ephemeral(쿼리에 끼워 넣기), 결과는 analytics 스키마의 표로만 만든다.
+name: moastock
+version: "1.0.0"
+config-version: 2
+profile: moastock
+
+model-paths: [models]
+test-paths: [tests]
+macro-paths: [macros]
+target-path: target
+clean-targets: [target, dbt_packages]
+
+models:
+  moastock:
+    staging:
+      +materialized: ephemeral
+    marts:
+      +materialized: table
+
+# 원천 쪽 표가 아직 없을 때(처음 실행)도 모델이 돌도록 비어 있는 표를 미리 만든다.
+# spark.news_comention 은 Spark 작업이, eval.runs 는 Kubeflow 평가 파이프라인이 채운다.
+on-run-start:
+  - "CREATE SCHEMA IF NOT EXISTS spark"
+  - "CREATE TABLE IF NOT EXISTS spark.news_comention (stock_a text, stock_b text, n_ab bigint, n_a bigint, n_b bigint, n_docs bigint, lift double precision, window_days int, computed_at timestamp)"
+  - "CREATE SCHEMA IF NOT EXISTS eval"
+  - "CREATE TABLE IF NOT EXISTS eval.runs (run_id text PRIMARY KEY, source text, tag text, created_at timestamptz DEFAULT now(), questions int, route_accuracy double precision, dart_hit_evidence double precision, dart_hit_cited double precision, number_support_rate double precision, latency_p50_ms int, latency_p95_ms int, passed boolean, summary jsonb)"

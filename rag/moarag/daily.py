@@ -130,13 +130,19 @@ async def collect(days: int, dart_max: int, matcher: StockMatcher):
         print(f"  DART 한도: {e}", flush=True)
 
 
-def main(days: int | None, dart_max: int, batch: int):
+def main(days: int | None, dart_max: int, batch: int, step: str = "all"):
+    """step: all | collect(수집만 - 원천 저장소에 쌓기) | load(쌓인 미적재분 정제·임베딩·적재). Airflow 는 둘을 따로 돌린다."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     pg = PgVector()
     days = days or pick_days(pg)
     matcher = load_matcher()
-    with Stage("daily", days=days, dart_max=dart_max) as st:
-        asyncio.run(collect(days, dart_max, matcher))
+    if step == "collect":
+        with Stage("daily_collect", days=days, dart_max=dart_max):
+            asyncio.run(collect(days, dart_max, matcher))
+        return
+    with Stage("daily" if step == "all" else "daily_load", days=days, dart_max=dart_max) as st:
+        if step == "all":
+            asyncio.run(collect(days, dart_max, matcher))
 
         con = connect()
         links: dict[str, dict[str, str]] = defaultdict(dict)
@@ -191,5 +197,6 @@ if __name__ == "__main__":
     ap.add_argument("--days", type=int, help="오늘부터 며칠 전까지 (기본: 운영 DB 최근 뉴스 기준 자동)")
     ap.add_argument("--dart-max", type=int, default=3000)
     ap.add_argument("--batch", type=int, default=64)
+    ap.add_argument("--step", choices=["all", "collect", "load"], default="all")
     a = ap.parse_args()
-    main(a.days, a.dart_max, a.batch)
+    main(a.days, a.dart_max, a.batch, a.step)

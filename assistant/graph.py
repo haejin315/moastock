@@ -21,6 +21,7 @@ from langgraph.config import get_stream_writer
 from langgraph.graph import END, StateGraph
 
 import llm
+import observability as obs
 from config import ANSWER_MAX_TOKENS, DEFAULT_DAYS, DISCLAIMER, ROOT
 
 EVIDENCE_TOTAL = 8                    # 도구 결과 + 문서 근거를 합친 최대 개수
@@ -143,6 +144,7 @@ def make_plan(q: str, j: dict, stocks: list[str], intent: str) -> list[dict]:
     return plan
 
 
+@obs.observe(name="node.understand", capture_input=False, capture_output=False)
 def understand(state: State) -> State:
     w = get_stream_writer()
     w({"type": "status", "text": "질문을 이해하는 중"})
@@ -165,6 +167,8 @@ def understand(state: State) -> State:
     w({"type": "plan", "intent": intent, "stocks": names, "days": days or DEFAULT_DAYS, "query": query,
        "period": [d.strftime("%Y-%m-%d") for d in period] if period else None,
        "tools": [p["tool"] for p in plan]})
+    obs.span(output={"intent": intent, "stocks": stocks, "days": days, "query": query, "advice": advice,
+                     "tools": [p["tool"] for p in plan]})
     return {"stocks": stocks, "days": days, "period": period, "intent": intent, "query": query, "source": source,
             "advice": advice, "plan": plan, "notes": []}
 
@@ -243,8 +247,10 @@ def run_tool(step: dict, state: State) -> tuple[list[Evidence], list[str]]:
     return [], []
 
 
+@obs.observe(name="node.gather", capture_input=False, capture_output=False)
 def gather(state: State) -> State:
     """계획한 도구를 함께 실행하고 결과를 하나의 근거 목록([1]…)으로 합친다. 실패한 도구는 알리고 넘어간다."""
+    import contextvars
     from concurrent.futures import ThreadPoolExecutor
     w = get_stream_writer()
     plan = state.get("plan") or [{"tool": "docs", "args": {}}]
@@ -253,7 +259,7 @@ def gather(state: State) -> State:
     notes = list(state.get("notes") or [])
     results = {}
     with ThreadPoolExecutor(max_workers=len(plan)) as pool:
-        futs = {step["tool"]: pool.submit(run_tool, step, state) for step in plan}
+        futs = {step["tool"]: pool.submit(contextvars.copy_context().run, run_tool, step, state) for step in plan}
         for name, f in futs.items():
             try:
                 results[name] = f.result(timeout=60)
@@ -335,6 +341,7 @@ def evidence_block(ev: list[Evidence]) -> str:
     return "\n\n".join(out)
 
 
+@obs.observe(name="node.answer", capture_input=False, capture_output=False)
 def answer(state: State) -> State:
     w = get_stream_writer()
     ev = state.get("evidence") or []
@@ -413,10 +420,18 @@ def verify_answer(text: str, ev: list[Evidence]) -> dict:
     }
 
 
+@obs.observe(name="node.verify", capture_input=False, capture_output=False)
 def verify(state: State) -> State:
     w = get_stream_writer()
     ev = state.get("evidence") or []
     checks = verify_answer(state.get("answer", ""), ev) if ev else {}
+    if checks:                                   # 답변 품질을 트레이스 점수로 (Langfuse 에서 낮은 답변만 골라 보기)
+        if checks.get("numbers"):
+            obs.score("number_support", checks["numbers_supported"] / checks["numbers"])
+        obs.score("has_citation", float(checks.get("has_citation", False)))
+        obs.score("invalid_citations", float(len(checks.get("invalid_citations") or [])))
+    obs.trace(output=state.get("answer", ""), metadata={"intent": state.get("intent"), "stocks": state.get("stocks"),
+                                                       "evidence": [e.citation() for e in ev]})
     w({"type": "done", "checks": checks, "notes": state.get("notes") or [], "disclaimer": DISCLAIMER,
        "sources": [e.citation() for e in ev]})
     return {"checks": checks}

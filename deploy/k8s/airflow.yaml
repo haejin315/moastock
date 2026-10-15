@@ -1,0 +1,107 @@
+# Airflow 3 (LocalExecutor, 파드 하나). 매일 수집·적재·그래프·Spark·dbt 를 DAG 로 돌리고, 각 작업은
+# KubernetesPodOperator 로 따로 파드를 띄워 실행한다 (작업마다 이미지·자원·재시도가 분리된다).
+# - 메타데이터 DB: 같은 Postgres 의 airflow 데이터베이스 (initContainer 가 없으면 만든다)
+# - DAG: VM 의 ~/moastock/deploy/airflow/dags 를 그대로 읽는다 (코드 동기화 = 파일 복사)
+# - 화면: 바깥에 열지 않는다. kubectl -n moastock port-forward svc/airflow 8080 → ssh -L 로 본다
+# - 인증: 화면이 VM 안에서만 열리므로 Simple auth manager 의 모두-관리자 모드
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: airflow, namespace: moastock }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: { name: airflow-pod-runner, namespace: moastock }
+rules:
+  - apiGroups: [""]
+    resources: [pods, pods/log, pods/exec, events]
+    verbs: [get, list, watch, create, delete, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: { name: airflow-pod-runner, namespace: moastock }
+subjects: [{ kind: ServiceAccount, name: airflow, namespace: moastock }]
+roleRef: { kind: Role, name: airflow-pod-runner, apiGroup: rbac.authorization.k8s.io }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: airflow-env, namespace: moastock }
+data:
+  AIRFLOW__CORE__EXECUTOR: LocalExecutor
+  AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+  AIRFLOW__CORE__DEFAULT_TIMEZONE: Asia/Seoul
+  AIRFLOW__CORE__PARALLELISM: "4"
+  AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+  AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://localhost:8080/execution/
+  AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: "True"
+  AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@db:5432/airflow
+  AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "True"
+  AIRFLOW__DAG_PROCESSOR__REFRESH_INTERVAL: "60"
+  AIRFLOW__LOGGING__BASE_LOG_FOLDER: /opt/airflow/logs
+  AIRFLOW__METRICS__STATSD_ON: "False"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: airflow, namespace: moastock, labels: { app: airflow } }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app: airflow } }
+  template:
+    metadata: { labels: { app: airflow } }
+    spec:
+      serviceAccountName: airflow
+      securityContext: { fsGroup: 0 }
+      initContainers:
+        - name: create-db
+          image: pgvector/pgvector:0.8.1-pg18
+          env: [{ name: PGPASSWORD, value: moarag }]
+          command: [sh, -c]
+          args:
+            - |
+              until pg_isready -h db -U moarag; do sleep 2; done
+              psql -h db -U moarag -d moarag -tc "SELECT 1 FROM pg_roles WHERE rolname='airflow'" | grep -q 1 \
+                || psql -h db -U moarag -d moarag -c "CREATE ROLE airflow LOGIN PASSWORD 'airflow'"
+              psql -h db -U moarag -d moarag -tc "SELECT 1 FROM pg_database WHERE datname='airflow'" | grep -q 1 \
+                || psql -h db -U moarag -d moarag -c "CREATE DATABASE airflow OWNER airflow"
+        - name: migrate
+          image: apache/airflow:3.1.0-python3.12
+          args: [db, migrate]
+          envFrom: [{ configMapRef: { name: airflow-env } }, { secretRef: { name: airflow-secrets } }]
+      containers:
+        - name: api-server
+          image: apache/airflow:3.1.0-python3.12
+          args: [api-server, --port, "8080"]
+          envFrom: &env [{ configMapRef: { name: airflow-env } }, { secretRef: { name: airflow-secrets } }]
+          ports: [{ containerPort: 8080 }]
+          resources: { requests: { cpu: 100m, memory: 512Mi }, limits: { memory: 1536Mi } }
+          volumeMounts: &mounts
+            - { name: dags, mountPath: /opt/airflow/dags }
+            - { name: logs, mountPath: /opt/airflow/logs }
+          readinessProbe: { httpGet: { path: /api/v2/monitor/health, port: 8080 }, periodSeconds: 15, initialDelaySeconds: 20 }
+        - name: scheduler
+          image: apache/airflow:3.1.0-python3.12
+          args: [scheduler]
+          envFrom: *env
+          resources: { requests: { cpu: 200m, memory: 512Mi }, limits: { memory: 2Gi } }
+          volumeMounts: *mounts
+          livenessProbe: { httpGet: { path: /health, port: 8974 }, periodSeconds: 30, initialDelaySeconds: 60, failureThreshold: 5 }
+        - name: dag-processor
+          image: apache/airflow:3.1.0-python3.12
+          args: [dag-processor]
+          envFrom: *env
+          resources: { requests: { cpu: 100m, memory: 256Mi }, limits: { memory: 1Gi } }
+          volumeMounts: *mounts
+        - name: triggerer
+          image: apache/airflow:3.1.0-python3.12
+          args: [triggerer]
+          envFrom: *env
+          resources: { requests: { cpu: 50m, memory: 256Mi }, limits: { memory: 768Mi } }
+          volumeMounts: *mounts
+      volumes:
+        - { name: dags, hostPath: { path: /home/haeji/moastock/deploy/airflow/dags, type: Directory } }
+        - { name: logs, hostPath: { path: /data/airflow/logs, type: DirectoryOrCreate } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: airflow, namespace: moastock }
+spec: { selector: { app: airflow }, ports: [{ port: 8080, targetPort: 8080 }] }

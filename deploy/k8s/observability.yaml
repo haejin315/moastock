@@ -1,0 +1,239 @@
+# 인프라·서빙 관측 (Grafana Cloud 무료 요금제로 보낸다 - VM 이 꺼져 있어도 대시보드·알림은 살아 있게)
+#
+#   Grafana Alloy (수집기 하나)
+#     지표 → Prometheus(Grafana Cloud)
+#       - 파드 주석 prometheus.io/scrape 가 붙은 서비스: vLLM(토큰 처리량·대기열·KV 캐시), TEI 임베딩·리랭커, DCGM(GPU)
+#       - 노드(CPU·메모리·디스크), 컨테이너(cAdvisor), Postgres(연결·크기·잠금)
+#     로그 → Loki(Grafana Cloud): moastock·kubeflow 네임스페이스 파드 로그
+#   DCGM exporter: T4 사용률·메모리·온도
+#
+# 비밀값(Grafana Cloud 주소·사용자·토큰)은 setup-observability.sh 가 Secret grafana-cloud 로 넣는다.
+# Langfuse(LLM 추적)는 클러스터 밖 SaaS 라 여기엔 없다 - assistant 가 Secret observability 의 LANGFUSE_* 로 보낸다.
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: alloy, namespace: moastock }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: { name: moastock-alloy }
+rules:
+  - apiGroups: [""]
+    resources: [nodes, nodes/proxy, nodes/metrics, services, endpoints, pods, pods/log, namespaces]
+    verbs: [get, list, watch]
+  - nonResourceURLs: [/metrics]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: { name: moastock-alloy }
+subjects: [{ kind: ServiceAccount, name: alloy, namespace: moastock }]
+roleRef: { kind: ClusterRole, name: moastock-alloy, apiGroup: rbac.authorization.k8s.io }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: alloy-config, namespace: moastock }
+data:
+  config.alloy: |
+    // ---------- 보내는 곳 ----------
+    prometheus.remote_write "cloud" {
+      endpoint {
+        url = sys.env("GRAFANA_PROM_URL")
+        basic_auth {
+          username = sys.env("GRAFANA_PROM_USER")
+          password = sys.env("GRAFANA_API_TOKEN")
+        }
+      }
+      external_labels = { cluster = "moastock" }
+    }
+    loki.write "cloud" {
+      endpoint {
+        url = sys.env("GRAFANA_LOKI_URL")
+        basic_auth {
+          username = sys.env("GRAFANA_LOKI_USER")
+          password = sys.env("GRAFANA_API_TOKEN")
+        }
+      }
+      external_labels = { cluster = "moastock" }
+    }
+
+    // ---------- 파드 지표 (주석으로 고른 것: vLLM, TEI, DCGM) ----------
+    discovery.kubernetes "pods" {
+      role = "pod"
+    }
+    discovery.relabel "annotated" {
+      targets = discovery.kubernetes.pods.targets
+      rule {
+        source_labels = ["__meta_kubernetes_pod_annotation_prometheus_io_scrape"]
+        regex         = "true"
+        action        = "keep"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_phase"]
+        regex         = "Running"
+        action        = "keep"
+      }
+      rule {
+        source_labels = ["__address__", "__meta_kubernetes_pod_annotation_prometheus_io_port"]
+        regex         = "([^:]+)(?::\\d+)?;(\\d+)"
+        replacement   = "$1:$2"
+        target_label  = "__address__"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_namespace"]
+        target_label  = "namespace"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_label_app"]
+        target_label  = "app"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_name"]
+        target_label  = "pod"
+      }
+    }
+    prometheus.scrape "pods" {
+      targets         = discovery.relabel.annotated.output
+      scrape_interval = "30s"
+      forward_to      = [prometheus.remote_write.cloud.receiver]
+    }
+
+    // ---------- 노드 (CPU·메모리·디스크·네트워크) ----------
+    prometheus.exporter.unix "node" {
+      procfs_path = "/host/proc"
+      sysfs_path  = "/host/sys"
+      rootfs_path = "/host/root"
+    }
+    prometheus.scrape "node" {
+      targets         = prometheus.exporter.unix.node.targets
+      scrape_interval = "30s"
+      forward_to      = [prometheus.remote_write.cloud.receiver]
+    }
+
+    // ---------- 컨테이너별 자원 (kubelet cAdvisor, API 서버 경유) ----------
+    discovery.kubernetes "nodes" {
+      role = "node"
+    }
+    discovery.relabel "cadvisor" {
+      targets = discovery.kubernetes.nodes.targets
+      rule {
+        replacement  = "kubernetes.default.svc:443"
+        target_label = "__address__"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_node_name"]
+        regex         = "(.+)"
+        replacement   = "/api/v1/nodes/$1/proxy/metrics/cadvisor"
+        target_label  = "__metrics_path__"
+      }
+    }
+    prometheus.scrape "cadvisor" {
+      targets           = discovery.relabel.cadvisor.output
+      scheme            = "https"
+      bearer_token_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+      tls_config {
+        ca_file = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+      }
+      scrape_interval = "60s"
+      forward_to      = [prometheus.relabel.cadvisor_keep.receiver]
+    }
+    // 무료 한도(활성 시계열 1만)를 넘지 않게 쓸 지표만
+    prometheus.relabel "cadvisor_keep" {
+      rule {
+        source_labels = ["__name__"]
+        regex         = "container_(cpu_usage_seconds_total|memory_working_set_bytes|oom_events_total|spec_memory_limit_bytes)"
+        action        = "keep"
+      }
+      rule {
+        source_labels = ["namespace"]
+        regex         = "moastock|kubeflow"
+        action        = "keep"
+      }
+      forward_to = [prometheus.remote_write.cloud.receiver]
+    }
+
+    // ---------- Postgres ----------
+    prometheus.exporter.postgres "db" {
+      data_source_names = ["postgresql://moarag:moarag@db.moastock.svc.cluster.local:5432/moarag?sslmode=disable"]
+    }
+    prometheus.scrape "postgres" {
+      targets         = prometheus.exporter.postgres.db.targets
+      scrape_interval = "60s"
+      forward_to      = [prometheus.remote_write.cloud.receiver]
+    }
+
+    // ---------- 로그 ----------
+    discovery.relabel "logs" {
+      targets = discovery.kubernetes.pods.targets
+      rule {
+        source_labels = ["__meta_kubernetes_namespace"]
+        regex         = "moastock|kubeflow"
+        action        = "keep"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_namespace"]
+        target_label  = "namespace"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_name"]
+        target_label  = "pod"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_container_name"]
+        target_label  = "container"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_label_app"]
+        target_label  = "app"
+      }
+    }
+    loki.source.kubernetes "pods" {
+      targets    = discovery.relabel.logs.output
+      forward_to = [loki.write.cloud.receiver]
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: alloy, namespace: moastock, labels: { app: alloy } }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: alloy } }
+  template:
+    metadata: { labels: { app: alloy } }
+    spec:
+      serviceAccountName: alloy
+      containers:
+        - name: alloy
+          image: grafana/alloy:v1.19.2
+          args: [run, /etc/alloy/config.alloy, --storage.path=/tmp/alloy, --server.http.listen-addr=0.0.0.0:12345]
+          envFrom: [{ secretRef: { name: grafana-cloud } }]
+          resources: { requests: { cpu: 50m, memory: 128Mi }, limits: { memory: 512Mi } }
+          volumeMounts:
+            - { name: config, mountPath: /etc/alloy }
+            - { name: proc, mountPath: /host/proc, readOnly: true }
+            - { name: sys, mountPath: /host/sys, readOnly: true }
+            - { name: root, mountPath: /host/root, readOnly: true }
+      volumes:
+        - { name: config, configMap: { name: alloy-config } }
+        - { name: proc, hostPath: { path: /proc } }
+        - { name: sys, hostPath: { path: /sys } }
+        - { name: root, hostPath: { path: / } }
+---
+# GPU 지표 (사용률·메모리·온도·전력). 장치 플러그인이 GPU 를 시간 분할하므로 GPU 자원은 요청하지 않고 전체를 본다
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: dcgm-exporter, namespace: moastock, labels: { app: dcgm-exporter } }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: dcgm-exporter } }
+  template:
+    metadata:
+      labels: { app: dcgm-exporter }
+      annotations: { prometheus.io/scrape: "true", prometheus.io/port: "9400" }
+    spec:
+      containers:
+        - name: dcgm-exporter
+          image: nvcr.io/nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+          env: [{ name: NVIDIA_VISIBLE_DEVICES, value: all }]
+          ports: [{ containerPort: 9400 }]
+          securityContext: { capabilities: { add: [SYS_ADMIN] } }
+          resources: { requests: { cpu: 20m, memory: 128Mi }, limits: { memory: 512Mi } }

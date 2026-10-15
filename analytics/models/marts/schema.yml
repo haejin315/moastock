@@ -1,0 +1,29 @@
+version: 2
+
+models:
+  - name: ingest_daily
+    description: 적재일·자료별 수집량과 정제 품질
+    columns:
+      - name: load_day
+        data_tests: [not_null]
+      - name: docs
+        data_tests: [not_null]
+  - name: stock_mentions_daily
+    description: 종목별 하루 뉴스 언급 수
+    columns:
+      - name: key
+        data_tests: [unique, not_null]
+  - name: company_graph
+    description: 회사별 관계 그래프 요약
+    columns:
+      - name: stock_code
+        data_tests: [unique, not_null]
+  - name: news_comention
+    description: 종목 동시 언급 (Spark)
+  - name: dart_report_mix
+    description: 주별 공시 종류
+  - name: eval_history
+    description: RAG 평가 회차 기록
+    columns:
+      - name: run_id
+        data_tests: [unique]

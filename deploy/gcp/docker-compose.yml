@@ -1,3 +1,4 @@
+# ※ 2026-10-15 부터 k3s 로 옮겨 쓰지 않는다 (deploy/k8s/serving.yaml, deploy/k8s/README.md). 되돌릴 때만 쓴다.
 # AI 비서 GPU 서버 (GCP T4 1장 VM 한 대). 모든 포트는 VM 안(127.0.0.1)에만 열고,
 # 바깥(사이트 Worker)과는 Cloudflare 터널로만 잇는다 - 공개 IP로 들어오는 길이 없다.
 #

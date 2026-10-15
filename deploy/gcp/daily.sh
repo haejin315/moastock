@@ -12,7 +12,8 @@ exec >> /data/rag/daily/cron.log 2>&1
 exec 9>/tmp/moastock-daily.lock
 flock -n 9 || { echo "$(date -Is) 이전 실행이 아직 도는 중 - 건너뜀"; exit 0; }
 echo "== $(date -Is) 시작"
-RUN="sudo docker compose exec -T -e MOARAG_DATA_DIR=/data/rag/daily -w /app/rag assistant python -m"
-$RUN moarag.daily && $RUN moarag.kg_build
+# k3s 로 옮긴 뒤: 오케스트레이터 파드 안에서 실행 (Airflow DAG moastock_daily 가 이 스크립트를 대신한다 - 수동 실행용)
+run() { kubectl -n moastock exec deploy/assistant -c assistant -- sh -c "cd /app/rag && MOARAG_DATA_DIR=/data/rag/daily python -m $1"; }
+run moarag.daily && run moarag.kg_build
 rc=$?
 echo "== $(date -Is) 끝 (exit $rc)"
