@@ -19,7 +19,12 @@ models:
       - name: stock_code
         data_tests: [unique, not_null]
   - name: news_comention
-    description: 종목 동시 언급 (Spark)
+    description: 최근 30일 뉴스의 종목 동시 언급 (문서 수·lift)
+    columns:
+      - name: stock_a
+        data_tests: [not_null]
+      - name: lift
+        data_tests: [not_null]
   - name: dart_report_mix
     description: 주별 공시 종류
   - name: eval_history

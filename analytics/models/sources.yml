@@ -45,13 +45,8 @@ sources:
               - relationships:
                   to: source('moarag', 'doc')
                   field: doc_id
-  - name: spark
-    schema: spark
-    tables:
-      - name: news_comention
-        description: Spark 작업(spark/comention.py) - 최근 N일 뉴스에서 두 종목이 함께 언급된 문서 수와 lift
   - name: eval
     schema: eval
     tables:
       - name: runs
-        description: Kubeflow 평가 파이프라인(pipelines/rag_eval.py)이 남기는 회차별 요약
+        description: 주간 평가(Airflow moastock_eval_weekly → assistant/eval/gate.py)가 남기는 회차별 요약

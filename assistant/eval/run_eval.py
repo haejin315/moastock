@@ -121,7 +121,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int)
     ap.add_argument("--tag", default=datetime.now().strftime("%Y%m%d-%H%M"))
-    ap.add_argument("--out", help="결과 파일 경로 (기본 eval/results/<tag>.json, Kubeflow 파이프라인은 출력 아티팩트 경로)")
+    ap.add_argument("--out", help="결과 파일 경로 (기본 eval/results/<tag>.json, 주간 평가는 /tmp 에 쓰고 gate.py 가 읽는다)")
     a = ap.parse_args()
     qs = [json.loads(l) for l in (HERE / "questions.jsonl").read_text(encoding="utf-8").splitlines() if l.strip()]
     if a.limit:

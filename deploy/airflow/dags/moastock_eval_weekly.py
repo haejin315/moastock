@@ -1,67 +1,44 @@
-"""매주 RAG 평가: Kubeflow Pipelines 의 moastock-rag-eval 을 실행하고 끝날 때까지 기다린다.
+"""매주 AI 비서 점검: 사이트 경로 점검 → RAG 평가 42문항 → 회귀 검사. 일요일 16시 (VM 운영 시간 안).
 
-  submit_kfp_run ─▶ (KFP: run_eval ─▶ gate)
+  probe ─▶ rag_eval (run_eval ▶ gate)
 
-- 파이프라인 정의: pipelines/rag_eval.py → 컴파일한 YAML 을 deploy.sh 가 dags/pipelines/ 에 복사한다
-- KFP REST API(v2beta1)로 바로 부른다 - Airflow 이미지에 kfp SDK 를 넣지 않으려고
-- gate 가 회귀를 찾으면 KFP 실행이 실패하고, 이 작업도 실패로 끝난다. 결과는 eval.runs → dbt eval_history
+- probe:    공개 API(/api/assistant)로 질문 5개 - Cloudflare·터널·assistant·LLM 전 경로 (assistant/eval/probe.py)
+- rag_eval: 평가 문항을 클러스터 안에서 돌리고(run_eval.py), 요약을 eval.runs 에 남긴다(gate.py).
+            같은 문항 수의 직전 통과 회차보다 max_drop 넘게 나빠지거나 없는 번호를 인용하면 실패 → 실패 알림
+probe 가 실패해도 평가는 돈다 (원인이 바깥 경로인지 RAG 인지 나눠 보려고). 결과 → dbt 모델 analytics.eval_history
 수동 실행: 화면에서 Trigger (conf 로 {"limit": 3} 처럼 문항 수를 줄일 수 있다)
+2026-10-19 까지는 Kubeflow Pipelines(평가)·Vertex AI Pipelines(경로 점검)로 돌렸다.
 """
-import json
-import time
-from datetime import datetime, timedelta
-from pathlib import Path
+from datetime import datetime
 
 import pendulum
-import requests
-import yaml
-from airflow.sdk import DAG, task
+from airflow.sdk import DAG
+
+from moastock_common import DEFAULT_ARGS, DSN, pod
 
 KST = pendulum.timezone("Asia/Seoul")
-KFP = "http://ml-pipeline.kubeflow.svc.cluster.local:8888/apis/v2beta1"
-PACKAGE = Path(__file__).parent / "pipelines" / "rag_eval.yaml"
-
-
-def pipeline_body(path: Path) -> dict:
-    """컴파일 YAML (파이프라인 스펙 + 쿠버네티스 플랫폼 스펙 두 문서) → API 가 받는 모양 (kfp Client 와 같게)"""
-    docs = [d for d in yaml.safe_load_all(path.read_text(encoding="utf-8")) if d]
-    return docs[0] if len(docs) == 1 else {"pipeline_spec": docs[0], "platform_spec": docs[1]}
-
+APP_ENV = {"ASSIST_LLM_BASE_URL": "http://llm:8000/v1", "ASSIST_PG_DSN": DSN, "MOARAG_EMBED_URL": "http://embed:80",
+           "ASSIST_RERANK_URL": "http://rerank:80", "PYTHONUNBUFFERED": "1"}
 
 with DAG(
     dag_id="moastock_eval_weekly",
-    description="Kubeflow Pipelines 로 RAG 평가 42문항 → 지표 기록·회귀 감지",
-    schedule="0 16 * * 0",                      # 일요일 16시 (VM 운영 시간 안)
+    description="사이트 경로 점검 + RAG 평가 42문항 → 지표 기록·회귀 감지",
+    schedule="0 16 * * 0",
     start_date=datetime(2026, 10, 15, tzinfo=KST),
     catchup=False,
     max_active_runs=1,
-    default_args={"owner": "moastock", "retries": 0},
+    default_args=DEFAULT_ARGS | {"retries": 0},
     params={"limit": 0, "max_drop": 0.05},
-    tags=["moastock", "eval", "kubeflow"],
+    tags=["moastock", "eval"],
 ) as dag:
+    probe = pod("probe", "assistant", ["sh", "-c", "cd /app/assistant && python eval/probe.py"],
+                mem="512Mi", timeout_min=20)
+    rag_eval = pod(
+        "rag_eval", "assistant",
+        ["sh", "-c",                       # 회차 이름은 실행 시각 (Airflow 3 수동 실행엔 logical_date 가 없다)
+         'cd /app/assistant && T="af-$(TZ=Asia/Seoul date +%Y%m%d-%H%M)" L="{{ params.limit }}" && '
+         'python eval/run_eval.py --tag "$T" --out /tmp/eval.json $([ "$L" != 0 ] && echo --limit "$L") && '
+         'python eval/gate.py /tmp/eval.json --tag "$T" --max-drop "{{ params.max_drop }}"'],
+        env=APP_ENV, mem="4Gi", timeout_min=120, trigger_rule="all_done")
 
-    @task(execution_timeout=timedelta(hours=2))
-    def submit_kfp_run(params=None):
-        tag = f"kfp-{datetime.now(KST):%Y%m%d-%H%M}"
-        body = {
-            "display_name": f"rag-eval {tag}",
-            "pipeline_spec": pipeline_body(PACKAGE),
-            "runtime_config": {"parameters": {"tag": tag, "limit": int(params["limit"]),
-                                              "max_drop": float(params["max_drop"])}},
-        }
-        r = requests.post(f"{KFP}/runs", json=body, timeout=60)
-        r.raise_for_status()
-        kfp_run = r.json()["run_id"]
-        print(f"KFP 실행 {kfp_run} ({tag})", flush=True)
-        while True:
-            time.sleep(30)
-            st = requests.get(f"{KFP}/runs/{kfp_run}", timeout=30).json()
-            state = st.get("state")
-            print("상태:", state, flush=True)
-            if state in ("SUCCEEDED", "FAILED", "SKIPPED", "CANCELED"):
-                break
-        if state != "SUCCEEDED":
-            raise RuntimeError(f"KFP 실행 {kfp_run} {state}: {json.dumps(st.get('error'), ensure_ascii=False)}")
-        return {"kfp_run": kfp_run, "tag": tag}
-
-    submit_kfp_run()
+    probe >> rag_eval

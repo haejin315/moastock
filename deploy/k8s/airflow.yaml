@@ -1,9 +1,10 @@
-# Airflow 3 (LocalExecutor, 파드 하나). 매일 수집·적재·그래프·Spark·dbt 를 DAG 로 돌리고, 각 작업은
+# Airflow 3 (LocalExecutor, 파드 하나). 매일 수집·적재·그래프·dbt, 매주 평가를 DAG 로 돌리고, 각 작업은
 # KubernetesPodOperator 로 따로 파드를 띄워 실행한다 (작업마다 이미지·자원·재시도가 분리된다).
 # - 메타데이터 DB: 같은 Postgres 의 airflow 데이터베이스 (initContainer 가 없으면 만든다)
 # - DAG: VM 의 ~/moastock/deploy/airflow/dags 를 그대로 읽는다 (코드 동기화 = 파일 복사)
 # - 화면: 바깥에 열지 않는다. kubectl -n moastock port-forward svc/airflow 8080 → ssh -L 로 본다
 # - 인증: 화면이 VM 안에서만 열리므로 Simple auth manager 의 모두-관리자 모드
+# - 실패 알림: Secret alerts 의 ALERT_WEBHOOK_URL (setup-observability.sh 가 만든다, 없으면 로그만)
 apiVersion: v1
 kind: ServiceAccount
 metadata: { name: airflow, namespace: moastock }
@@ -71,7 +72,7 @@ spec:
         - name: api-server
           image: apache/airflow:3.1.0-python3.12
           args: [api-server, --port, "8080"]
-          envFrom: &env [{ configMapRef: { name: airflow-env } }, { secretRef: { name: airflow-secrets } }]
+          envFrom: &env [{ configMapRef: { name: airflow-env } }, { secretRef: { name: airflow-secrets } }, { secretRef: { name: alerts, optional: true } }]
           ports: [{ containerPort: 8080 }]
           resources: { requests: { cpu: 100m, memory: 512Mi }, limits: { memory: 1536Mi } }
           volumeMounts: &mounts

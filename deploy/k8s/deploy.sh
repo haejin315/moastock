@@ -22,7 +22,6 @@ if [[ $what == serving || $what == all ]]; then
 fi
 if [[ $what == airflow || $what == all ]]; then
   build dbt analytics/Dockerfile analytics
-  build spark spark/Dockerfile spark
   # Airflow 비밀값(JWT·세션·Fernet 키)은 처음 한 번 만들어 두고 그대로 쓴다
   if ! kubectl -n moastock get secret airflow-secrets >/dev/null 2>&1; then
     kubectl -n moastock create secret generic airflow-secrets \
@@ -31,10 +30,6 @@ if [[ $what == airflow || $what == all ]]; then
       --from-literal=AIRFLOW__CORE__FERNET_KEY="$(openssl rand -base64 32 | tr '+/' '-_')"
   fi
   sudo mkdir -p /data/airflow/logs && sudo chown -R 50000:0 /data/airflow
-  # Kubeflow 파이프라인 컴파일 → Airflow 가 읽는 자리로
-  sudo docker run --rm -v "$PWD/pipelines:/p" python:3.12-slim sh -c \
-    "pip install -q --root-user-action=ignore kfp==2.16.0 kfp-kubernetes >/dev/null 2>&1; python /p/rag_eval.py"
-  mkdir -p deploy/airflow/dags/pipelines && cp pipelines/compiled/*.yaml deploy/airflow/dags/pipelines/
   kubectl apply -f deploy/k8s/airflow.yaml
   kubectl -n moastock rollout restart deploy/airflow
 fi

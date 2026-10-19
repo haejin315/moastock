@@ -4,7 +4,7 @@
 #     지표 → Prometheus(Grafana Cloud)
 #       - 파드 주석 prometheus.io/scrape 가 붙은 서비스: vLLM(토큰 처리량·대기열·KV 캐시), TEI 임베딩·리랭커, DCGM(GPU)
 #       - 노드(CPU·메모리·디스크), 컨테이너(cAdvisor), Postgres(연결·크기·잠금)
-#     로그 → Loki(Grafana Cloud): moastock·kubeflow 네임스페이스 파드 로그
+#     로그 → Loki(Grafana Cloud): moastock 네임스페이스 파드 로그
 #   DCGM exporter: T4 사용률·메모리·온도
 #
 # 비밀값(Grafana Cloud 주소·사용자·토큰)은 setup-observability.sh 가 Secret grafana-cloud 로 넣는다.
@@ -145,7 +145,7 @@ data:
       }
       rule {
         source_labels = ["namespace"]
-        regex         = "moastock|kubeflow"
+        regex         = "moastock"
         action        = "keep"
       }
       forward_to = [prometheus.remote_write.cloud.receiver]
@@ -166,7 +166,7 @@ data:
       targets = discovery.kubernetes.pods.targets
       rule {
         source_labels = ["__meta_kubernetes_namespace"]
-        regex         = "moastock|kubeflow"
+        regex         = "moastock"
         action        = "keep"
       }
       rule {

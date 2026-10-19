@@ -1,4 +1,7 @@
-"""DAG 공통: 작업 파드 만들기 (KubernetesPodOperator). DAG 파일이 아니라 .airflowignore 로 파싱에서 뺀다."""
+"""DAG 공통: 작업 파드 만들기 (KubernetesPodOperator), 실패 알림. DAG 파일이 아니라 .airflowignore 로 파싱에서 뺀다."""
+import json
+import os
+import urllib.request
 from datetime import timedelta
 
 from airflow.providers.cncf.kubernetes.operators.pod import KubernetesPodOperator
@@ -8,10 +11,31 @@ from kubernetes.client import models as k8s
 NS = "moastock"
 DSN = "postgresql://moarag:moarag@db:5432/moarag"
 
+
+
+def notify_failure(context):
+    """재시도까지 다 실패한 작업을 웹훅으로 알린다. ALERT_WEBHOOK_URL (Secret alerts, 없으면 로그만) 은
+    Discord·Slack 수신 웹훅 둘 다 받게 content·text 를 함께 보낸다."""
+    ti = context["task_instance"]
+    msg = (f"[moastock] Airflow 실패: {ti.dag_id}.{ti.task_id} (회차 {context['run_id']}, 시도 {ti.try_number})\n"
+           f"{str(context.get('exception') or '')[:300]}")
+    url = os.environ.get("ALERT_WEBHOOK_URL")
+    if not url:
+        print("ALERT_WEBHOOK_URL 없음 - 알림 생략:", msg)
+        return
+    req = urllib.request.Request(url, data=json.dumps({"content": msg, "text": msg}).encode(),
+                                 headers={"Content-Type": "application/json", "User-Agent": "moastock-airflow"})
+    try:
+        urllib.request.urlopen(req, timeout=10).close()
+    except Exception as e:                # 알림이 실패해도 작업 결과는 그대로
+        print("알림 보내기 실패:", e)
+
+
 DEFAULT_ARGS = {
     "owner": "moastock",
     "retries": 2,                         # 스팟 회수로 파드가 죽으면 VM 이 다시 켜진 뒤 이어서
     "retry_delay": timedelta(minutes=5),
+    "on_failure_callback": notify_failure,
 }
 
 RAG_VOLUME = k8s.V1Volume(name="rag", host_path=k8s.V1HostPathVolumeSource(path="/data/rag", type="Directory"))

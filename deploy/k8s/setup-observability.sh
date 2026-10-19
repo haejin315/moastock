@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 관측성 켜기: 키 파일 → 쿠버네티스 Secret → 수집기 배포 → assistant 다시 띄우기 (Langfuse 추적이 켜진다).
+# 관측성 켜기: 키 파일 → 쿠버네티스 Secret → 수집기 배포 → assistant·Airflow 다시 띄우기 (Langfuse 추적·실패 알림이 켜진다).
 #   bash deploy/k8s/setup-observability.sh            (VM 에서, 키 파일을 먼저 채운다)
 #
 # 키 파일 deploy/gcp/observability.env (저장소에 올리지 않는다 - .gitignore):
@@ -11,6 +11,7 @@
 #   GRAFANA_LOKI_URL=https://logs-prod-XXX.grafana.net/loki/api/v1/push
 #   GRAFANA_LOKI_USER=7654321                          (Loki 인스턴스 ID)
 #   GRAFANA_API_TOKEN=glc_...                          (Access Policy 토큰: metrics:write, logs:write)
+#   ALERT_WEBHOOK_URL=https://discord.com/api/webhooks/...   (Airflow 작업 실패 알림, Slack 수신 웹훅도 된다)
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 ENV=deploy/gcp/observability.env
@@ -23,6 +24,11 @@ if grep -q '^GRAFANA_API_TOKEN=.' "$ENV"; then
     --from-env-file=<(grep -E '^GRAFANA_' "$ENV") --dry-run=client -o yaml | kubectl apply -f -
   kubectl apply -f deploy/k8s/observability.yaml
   kubectl -n moastock rollout restart deploy/alloy
+fi
+if grep -q '^ALERT_WEBHOOK_URL=.' "$ENV"; then
+  kubectl -n moastock create secret generic alerts \
+    --from-env-file=<(grep -E '^ALERT_WEBHOOK_URL=' "$ENV") --dry-run=client -o yaml | kubectl apply -f -
+  kubectl -n moastock rollout restart deploy/airflow
 fi
 kubectl -n moastock rollout restart deploy/assistant
 kubectl -n moastock rollout status deploy/assistant --timeout=180s

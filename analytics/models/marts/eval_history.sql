@@ -1,4 +1,4 @@
--- 평가 회차 기록 (Kubeflow 파이프라인) + 직전 회차 대비 변화
+-- 평가 회차 기록 (Airflow 주간 평가) + 직전 회차 대비 변화
 select
     *,
     number_support_rate - lag(number_support_rate) over (partition by source order by created_at) as number_support_delta,
