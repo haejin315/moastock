@@ -16,6 +16,10 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 ENV=deploy/gcp/observability.env
 [ -f "$ENV" ] || { echo "$ENV 가 없습니다 (위 주석의 키를 채워 주세요)"; exit 1; }
+# 윈도우에서 편집한 파일(CRLF)·따옴표로 감싼 값도 받게 정리한 사본을 쓴다
+CLEAN=$(mktemp); trap 'rm -f "$CLEAN"' EXIT
+sed -e 's/\r$//' -e "s/^\([A-Z_]*\)=[\"']\(.*\)[\"']$/\1=\2/" "$ENV" > "$CLEAN"
+ENV=$CLEAN
 
 kubectl -n moastock create secret generic observability \
   --from-env-file=<(grep -E '^LANGFUSE_' "$ENV") --dry-run=client -o yaml | kubectl apply -f -
@@ -25,9 +29,9 @@ if grep -q '^GRAFANA_API_TOKEN=.' "$ENV"; then
   kubectl apply -f deploy/k8s/observability.yaml
   kubectl -n moastock rollout restart deploy/alloy
 fi
-if grep -q '^ALERT_WEBHOOK_URL=.' "$ENV"; then
-  kubectl -n moastock create secret generic alerts \
-    --from-env-file=<(grep -E '^ALERT_WEBHOOK_URL=' "$ENV") --dry-run=client -o yaml | kubectl apply -f -
+# 웹훅 주소가 비어 있으면 빈 값으로 둔다 (Airflow 는 로그만 남긴다). 바뀌었을 때만 Airflow 를 다시 띄운다
+if kubectl -n moastock create secret generic alerts --from-env-file=<(grep -E '^ALERT_WEBHOOK_URL=' "$ENV") \
+     --dry-run=client -o yaml | kubectl apply -f - | grep -Eq "configured|created"; then
   kubectl -n moastock rollout restart deploy/airflow
 fi
 kubectl -n moastock rollout restart deploy/assistant

@@ -19,7 +19,7 @@ def notify_failure(context):
     ti = context["task_instance"]
     msg = (f"[moastock] Airflow 실패: {ti.dag_id}.{ti.task_id} (회차 {context['run_id']}, 시도 {ti.try_number})\n"
            f"{str(context.get('exception') or '')[:300]}")
-    url = os.environ.get("ALERT_WEBHOOK_URL")
+    url = os.environ.get("ALERT_WEBHOOK_URL", "").strip()
     if not url:
         print("ALERT_WEBHOOK_URL 없음 - 알림 생략:", msg)
         return

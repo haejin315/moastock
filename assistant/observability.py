@@ -15,8 +15,10 @@ ENABLED = bool(os.environ.get("LANGFUSE_PUBLIC_KEY") and os.environ.get("LANGFUS
 _lf = None
 if ENABLED:
     try:
-        from langfuse import get_client
+        from langfuse import Langfuse, get_client
         from langfuse import observe as _observe
+        # FastAPI 가 스스로 남기는 OpenTelemetry 요청 기록(헬스체크 10초마다 등)은 받지 않는다 - 무료 한도를 다 쓴다
+        Langfuse(blocked_instrumentation_scopes=["fastapi"])
         _lf = get_client()
     except Exception as e:                      # 패키지·설정 문제로 서비스가 멈추지 않게
         print(f"[observability] Langfuse 끔: {e!r}", flush=True)
