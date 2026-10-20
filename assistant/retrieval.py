@@ -35,6 +35,15 @@ def encoder():
     return _encoder
 
 
+# 사람들이 줄여 부르는 이름 → 종목코드 (정식 이름은 스냅샷·공시 회사명으로 이미 잡힌다)
+ALIASES = {
+    "하이닉스": "000660", "하닉": "000660", "삼전": "005930", "현차": "005380", "엘지엔솔": "373220", "엔솔": "373220",
+    "삼바": "207940", "카뱅": "323410", "엘지전자": "066570", "엘전": "066570", "포스코홀딩스": "005490",
+    "네이버": "035420", "엘지화학": "051910", "엘화": "051910", "삼성에스디아이": "006400", "한전": "015760",
+    "에스케이하이닉스": "000660", "한화에어로": "012450", "현대중공업": "329180",
+}
+
+
 def matcher():
     """종목 사전 = 스냅샷 종목명 + DART 공시 회사명(예: 'LS ELECTRIC' ↔ '엘에스일렉트릭')"""
     global _matcher
@@ -49,7 +58,8 @@ def matcher():
                 "SELECT DISTINCT corp_name, stock_codes[1] FROM doc "
                 "WHERE source_type = 'dart' AND corp_name IS NOT NULL AND cardinality(stock_codes) > 0").fetchall()
             extra = [{"name": n, "code": c} for n, c in rows if (n, c) not in known]
-            _matcher = StockMatcher([{"name": n, "code": c} for n, c in known] + extra)
+            alias = [{"name": n, "code": c} for n, c in ALIASES.items()]
+            _matcher = StockMatcher([{"name": n, "code": c} for n, c in known] + extra + alias)
     return _matcher
 
 

@@ -56,6 +56,10 @@ _PERIOD = [(r"오늘|금일", 2), (r"어제|전일", 3), (r"이번\s*주|최근\
            (r"이번\s*달|한\s*달|최근\s*1\s*개월|지난\s*달", 35), (r"최근\s*(\d+)\s*일", None),
            (r"최근\s*(\d+)\s*주", None), (r"최근\s*(\d+)\s*개월", None), (r"올해|연초", 280),
            (RECENT.pattern, 14)]
+# 주가가 '왜' 움직였는지 묻는 질문: 최근 주가 흐름 + 최근 뉴스(원인 분석 기사)를 함께 본다
+_MOVE = r"떨어|하락|빠지|빠졌|빠져|급락|폭락|내리|내렸|약세|올라|오르|올랐|상승|급등|폭등|강세|반등"
+MOVE = re.compile(rf"(왜|이유|원인|무슨\s*일|어째서)[^.?!]{{0,15}}({_MOVE})|({_MOVE})[^.?!]{{0,15}}(왜|이유|원인|무슨\s*일|어째서)")
+MOVE_DAYS = 14
 
 
 def parse_month(q: str, now: datetime | None = None):
@@ -104,7 +108,7 @@ JSON 외의 말은 쓰지 않는다."""
 TOOL_RULES = [
     ("quote", r"주가|시세|현재가|얼마에|지금\s*가격|종가"),
     ("fundamentals", r"PER|PBR|EPS|BPS|per|pbr|배당수익률|시가총액|시총|외국인\s*(보유|지분)|52주|밸류|주가수익비율|주가순자산"),
-    ("price_history", r"수익률|올랐|내렸|떨어졌|상승률|하락률|추이|흐름|최고가|최저가"),
+    ("price_history", r"수익률|올랐|내렸|떨어|상승률|하락률|추이|흐름|최고가|최저가|급락|폭락|급등|폭등"),
     ("docs", r"뉴스|공시|소식|이슈|기사|발표|보도"),
     ("relations", r"최대주주|대주주|자회사|종속회사|계열사|계열회사|임원|사내이사|사외이사|대표이사|지분\s*구조"),
 ]
@@ -125,13 +129,17 @@ def make_plan(q: str, j: dict, stocks: list[str], intent: str) -> list[dict]:
         chosen = [t for t in chosen if t not in PER_STOCK]
     if stocks:
         chosen = [t for t in chosen if t != "screen"]
+    move = bool(MOVE.search(q))
+    if move:                                             # 등락 원인: 주가 흐름과 원인 기사를 같이 본다
+        chosen += [t for t in (("quote", "price_history") if stocks else ()) if t not in chosen]
+        chosen += [] if "docs" in chosen else ["docs"]
     if not chosen or (intent in ("실적", "공시", "이슈", "시황", "비교") and "docs" not in chosen):
         chosen.append("docs")
     plan = []
     for t in dict.fromkeys(chosen):
         args = {}
         if t == "price_history":
-            args["days"] = j.get("days") or parse_days(q) or 30
+            args["days"] = j.get("days") or parse_days(q) or (MOVE_DAYS if move else 30)
         elif t == "screen":
             sc = j.get("screen") if isinstance(j.get("screen"), dict) else {}
             market = sc.get("market") if sc.get("market") in ("KOSPI", "KOSDAQ") else None
@@ -158,6 +166,9 @@ def understand(state: State) -> State:
     intent = j.get("intent") if j.get("intent") in intents else "일반"
     source = j.get("source") if j.get("source") in {"news", "dart", "any"} else "any"
     query = str(j.get("query") or q)[:80]
+    if MOVE.search(q):          # 등락 원인은 공시보다 시장 해석 기사가 답이다. 최근 2주부터 (못 찾으면 find_docs 가 넓힌다)
+        intent = "이슈" if intent in ("일반", "시세", "공시", "검색") else intent
+        source, days = "news", days or MOVE_DAYS
     plan = make_plan(q, j, stocks, intent)
     # 규칙 보강: 모델이 놓쳐도 명백한 매매 권유 요청은 거른다. 지표 조건으로 종목을 찾는 것은 권유가 아니다
     advice = bool(re.search(r"(사도|팔아도|매수해도|매도해도|살까|팔까|사야|팔아야|들어가도|물타기|손절)\s*(될까|돼|할까|하나|해|요)?", q))
@@ -210,7 +221,7 @@ def find_docs(state: State) -> tuple[list[Evidence], list[str]]:
     notes = []
     q = state.get("query") or state["question"]
     period = state.get("period")
-    recent = bool(RECENT.search(state["question"])) and not period
+    recent = bool(RECENT.search(state["question"]) or MOVE.search(state["question"])) and not period
     ev = search(q, stocks=stocks, since_days=days, period=period, source=source, recent=recent)
     # 못 찾으면 조건을 하나씩 풀어 다시 (풀었다는 사실은 답변에 알린다). 연결 회사 근거만 있으면 못 찾은 것으로 본다
     def few(ev):
@@ -287,7 +298,8 @@ ANSWER_SYS = """너는 모아스톡의 AI 비서다. 아래 [근거]만 사용�
 1. 근거에 없는 사실·숫자는 절대 쓰지 않는다. 근거가 부족하면 "확인된 자료에서는 찾지 못했습니다"라고 말한다.
 2. 문장마다 끝에 근거 번호를 [1], [2]처럼 붙인다.
    숫자(금액·비율·날짜)는 근거에 적힌 표기 그대로 옮긴다. "16,419,204,526원"을 "164억…원"처럼 단위로 바꿔 쓰지 않는다.
-3. 날짜가 중요하면 "N월 N일 공시/보도에 따르면"처럼 시점을 밝힌다.
+3. 날짜가 중요하면 시점과 자료 종류를 밝힌다. 공시면 "N월 N일 공시에 따르면", 뉴스면 "N월 N일 ○○(언론사) 보도에 따르면".
+   뉴스를 공시라고 부르지 않는다.
 4. 매수·매도 추천이나 주가 예측은 하지 않는다.
 5. 3~6문장 또는 짧은 목록으로 간결하게 답한다.
 6. (공시 표) 근거의 '열:' 줄이 열 이름이고, 아래 각 줄은 '행 이름 — 값 · 값 …'으로 값이 열 순서대로 놓여 있다.
@@ -299,6 +311,9 @@ ANSWER_SYS = """너는 모아스톡의 AI 비서다. 아래 [근거]만 사용�
    조건 검색 결과는 '조건에 맞는 종목 목록'이라고 소개하고, 추천이라고 표현하지 않는다.
 8. 근거에 '질문 종목의 종속회사/계열회사 … 자료'라고 적힌 것은 질문한 회사가 아니라 연결된 회사의 자료다.
    그 내용을 쓸 때는 "계열회사 삼성SDI는 …"처럼 어느 회사의 이야기인지 밝히고, 질문한 회사의 수치처럼 쓰지 않는다.
+9. 주가가 왜 오르거나 내렸는지 묻는 질문: 먼저 모아스톡 데이터로 실제 움직임(기간·등락률)을 밝히고,
+   이어서 최근 기사들이 꼽은 원인을 2~4개로 묶어 정리한다. 원인은 "○○ 보도는 …를 원인으로 꼽았다"처럼 기사의 해석으로 쓴다.
+   질문 시점과 먼 옛날 기사는 쓰지 않거나 "이전에도 …"로 구분한다.
 형식 예시: "8월 10일 공시에 따르면 회사는 50억원 규모의 전환사채 발행을 결정했다[1]. 전환가액은 1주당 3,200원이다[1]."
 인용 번호 없이 끝나는 문장은 쓰지 않는다."""
 
