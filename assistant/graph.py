@@ -25,6 +25,7 @@ import observability as obs
 from config import ANSWER_MAX_TOKENS, DEFAULT_DAYS, DISCLAIMER, ROOT
 
 EVIDENCE_TOTAL = 8                    # 도구 결과 + 문서 근거를 합친 최대 개수
+EVIDENCE_TOTAL_MOVE = 12              # 등락 원인 질문 (요인 비교·공시 목록·시장 뉴스·종목 뉴스)
 from retrieval import KST, Evidence, resolve_stocks, search
 import tools
 
@@ -45,6 +46,7 @@ class State(TypedDict, total=False):
     evidence: list[Evidence]
     notes: list[str]
     answer: str
+    attribution_fixed: int           # 인용 번호와 맞지 않아 바로잡은 언론사 이름 수
     checks: dict
 
 
@@ -114,8 +116,8 @@ TOOL_RULES = [
 ]
 SCREEN_RULE = (r"(종목|회사|기업).{0,12}(찾아|골라|목록|리스트|순위|어디|뭐|있어)"
                r"|(이하|이상|미만|초과|높은|낮은|상위|하위).{0,8}(종목|회사|기업)")
-TOOLS = {"docs", "quote", "fundamentals", "price_history", "screen", "relations"}
-PER_STOCK = ("quote", "fundamentals", "price_history", "relations")
+TOOLS = {"docs", "quote", "fundamentals", "price_history", "screen", "relations", "market"}
+PER_STOCK = ("quote", "fundamentals", "price_history", "relations", "market")
 
 
 def make_plan(q: str, j: dict, stocks: list[str], intent: str) -> list[dict]:
@@ -130,8 +132,10 @@ def make_plan(q: str, j: dict, stocks: list[str], intent: str) -> list[dict]:
     if stocks:
         chosen = [t for t in chosen if t != "screen"]
     move = bool(MOVE.search(q))
-    if move:                                             # 등락 원인: 주가 흐름과 원인 기사를 같이 본다
-        chosen += [t for t in (("quote", "price_history") if stocks else ()) if t not in chosen]
+    if move:                     # 등락 원인: 시세 + 요인 비교(시장·업종·해외·공시 목록·시장 뉴스) + 종목 뉴스
+        if stocks:               # 주가 흐름은 요인 비교에 들어 있다
+            chosen = [t for t in chosen if t != "price_history"]
+            chosen += [t for t in ("quote", "market") if t not in chosen]
         chosen += [] if "docs" in chosen else ["docs"]
     if not chosen or (intent in ("실적", "공시", "이슈", "시황", "비교") and "docs" not in chosen):
         chosen.append("docs")
@@ -212,7 +216,7 @@ def scope(state: State) -> State:
 
 TOOL_STATUS = {"docs": "관련 뉴스·공시를 찾는 중", "quote": "시세를 확인하는 중", "fundamentals": "투자 지표를 확인하는 중",
                "price_history": "주가 흐름을 확인하는 중", "screen": "조건에 맞는 종목을 찾는 중",
-               "relations": "회사 관계를 확인하는 중"}
+               "relations": "회사 관계를 확인하는 중", "market": "시장·업종·해외 흐름과 비교하는 중"}
 
 
 def find_docs(state: State) -> tuple[list[Evidence], list[str]]:
@@ -255,7 +259,28 @@ def run_tool(step: dict, state: State) -> tuple[list[Evidence], list[str]]:
     if t == "relations":
         import kg
         return kg.relations(stocks, args.get("relation")), []
+    if t == "market":
+        return market_evidence(stocks[0], state["question"]), []
     return [], []
+
+
+DOWN = re.compile(r"떨어|하락|빠지|빠졌|빠져|급락|폭락|내리|내렸|약세")
+
+
+def market_evidence(code: str, question: str) -> list[Evidence]:
+    """등락 원인 질문의 바탕 자료: 요인 비교(계산)·최근 14일 공시 목록 + 시장 전체·업종 뉴스 (종목 뉴스는 docs 가 맡는다)"""
+    from retrieval import conn
+    rows = conn().execute(
+        "SELECT published_at, title FROM doc WHERE source_type = 'dart' AND %s = ANY(stock_codes) "
+        "AND published_at >= now() - interval '14 days' ORDER BY published_at DESC LIMIT 20", (code,)).fetchall()
+    disclosures = [(p.astimezone(KST).strftime("%m-%d"), t) for p, t in rows]
+    word = "하락" if DOWN.search(question) else "상승"
+    ev = tools.market_context(code, disclosures, asked=word)
+    industry = (tools._stock(code) or {}).get("industry") or ""
+    sector = "반도체" if "반도체" in industry else industry.split(",")[0].split("과")[0]
+    for q in (f"코스피 증시 {word} 원인 외국인 수급", f"{sector} 업종 주가 {word} 이유"):
+        ev += search(q, stocks=None, since_days=7, source="news", recent=True, limit=2)
+    return ev
 
 
 @obs.observe(name="node.gather", capture_input=False, capture_output=False)
@@ -283,7 +308,11 @@ def gather(state: State) -> State:
             ev += results[step["tool"]][0]
             notes += results[step["tool"]][1]
     if "docs" in results:
-        ev += results["docs"][0][:max(2, EVIDENCE_TOTAL - len(ev))]
+        # 등락 원인 질문은 요인 비교·시장 뉴스에 종목 뉴스까지 모아야 해서 근거를 더 받는다 (시장 뉴스와 겹치는 기사는 뺀다)
+        total, least = (EVIDENCE_TOTAL_MOVE, 4) if "market" in results else (EVIDENCE_TOTAL, 2)
+        have = {e.chunk_id for e in ev if e.chunk_id}
+        docs = [e for e in results["docs"][0] if e.chunk_id not in have]
+        ev += docs[:max(least, total - len(ev))]
         notes += results["docs"][1]
     for i, e in enumerate(ev, 1):
         e.n = i
@@ -299,7 +328,7 @@ ANSWER_SYS = """너는 모아스톡의 AI 비서다. 아래 [근거]만 사용�
 2. 문장마다 끝에 근거 번호를 [1], [2]처럼 붙인다.
    숫자(금액·비율·날짜)는 근거에 적힌 표기 그대로 옮긴다. "16,419,204,526원"을 "164억…원"처럼 단위로 바꿔 쓰지 않는다.
 3. 날짜가 중요하면 시점과 자료 종류를 밝힌다. 공시면 "N월 N일 공시에 따르면", 뉴스면 "N월 N일 ○○(언론사) 보도에 따르면".
-   뉴스를 공시라고 부르지 않는다.
+   뉴스를 공시라고 부르지 않는다. 언론사 이름은 그 문장에 붙이는 번호의 근거 머리에 적힌 언론사를 쓴다.
 4. 매수·매도 추천이나 주가 예측은 하지 않는다.
 5. 3~6문장 또는 짧은 목록으로 간결하게 답한다.
 6. (공시 표) 근거의 '열:' 줄이 열 이름이고, 아래 각 줄은 '행 이름 — 값 · 값 …'으로 값이 열 순서대로 놓여 있다.
@@ -311,11 +340,27 @@ ANSWER_SYS = """너는 모아스톡의 AI 비서다. 아래 [근거]만 사용�
    조건 검색 결과는 '조건에 맞는 종목 목록'이라고 소개하고, 추천이라고 표현하지 않는다.
 8. 근거에 '질문 종목의 종속회사/계열회사 … 자료'라고 적힌 것은 질문한 회사가 아니라 연결된 회사의 자료다.
    그 내용을 쓸 때는 "계열회사 삼성SDI는 …"처럼 어느 회사의 이야기인지 밝히고, 질문한 회사의 수치처럼 쓰지 않는다.
-9. 주가가 왜 오르거나 내렸는지 묻는 질문: 먼저 모아스톡 데이터로 실제 움직임(기간·등락률)을 밝히고,
-   이어서 최근 기사들이 꼽은 원인을 2~4개로 묶어 정리한다. 원인은 "○○ 보도는 …를 원인으로 꼽았다"처럼 기사의 해석으로 쓴다.
-   질문 시점과 먼 옛날 기사는 쓰지 않거나 "이전에도 …"로 구분한다.
 형식 예시: "8월 10일 공시에 따르면 회사는 50억원 규모의 전환사채 발행을 결정했다[1]. 전환가액은 1주당 3,200원이다[1]."
 인용 번호 없이 끝나는 문장은 쓰지 않는다."""
+
+# 주가가 왜 움직였는지 묻는 질문에만 덧붙인다: 자료를 요약하지 말고 요인을 가려 추론한다
+MOVE_SYS = """
+[등락 원인 질문 답변 방법]
+사용자는 투자자이고 "왜 이렇게 움직였나"를 알고 싶어 한다. 공시·기사를 나열하지 말고, 모든 근거를 합쳐 요인을 추론한다.
+0. 근거에 '※ 질문 확인' 줄이 있으면 질문의 전제가 틀린 것이다. 첫 문장에서 "최근 주가는 오히려 …"처럼 실제 움직임을 먼저 바로잡고,
+   없는 상승·하락의 원인을 지어내지 말고 실제 움직임의 요인을 설명한다.
+1. 움직임: '등락 요인 비교' 근거로 종목이 얼마나 움직였는지(1일·5거래일·20거래일)와 코스피·같은 업종과 비교해 밝힌다.
+2. 요인의 몫: 같은 근거의 '나누기(계산)' 줄(1일·5거래일·20거래일)로 시장 전체·업종·종목 고유 중 어느 몫이 가장 큰지 말한다.
+   예: "5거래일 -15.2% 중 시장 전체 몫이 -8.1%p로 가장 커, 회사 문제보다 시장 전체 하락의 영향이 크다[2]."
+3. 가능성 높은 원인부터 2~4개를 '1) … 2) …' 목록으로 쓴다. 각 원인은 근거 기사·지표로 뒷받침한다.
+   - 시장 전체 몫이 크면 시장 뉴스(외국인 매도·금리·환율·해외 증시)를, 업종 몫이 크면 업종·해외 비교 지표(해외 반도체지수 등)와
+     업종 뉴스를, 종목 고유 몫이 크면 종목 뉴스와 공시를 앞에 둔다.
+   - 기사의 해석은 "○○ 보도는 …를 원인으로 꼽았다"처럼 출처를 밝힌다.
+   - 목록의 각 항목도 문장 끝마다 근거 번호를 붙인다. 예: "1) 외국인 매도: 10월 19일 연합뉴스TV 보도는 외국인 매도를 하락 원인으로 꼽았다[4]."
+4. 공시: '최근 공시 목록'에 주가에 영향을 줄 만한 회사 사건(유상증자·전환사채·대규모 매도·실적·소송 등)이 있으면 원인으로 다루고,
+   정기 보고·지분 변동 보고처럼 일상적인 공시뿐이면 "최근 2주 공시에는 주가를 크게 움직일 만한 회사 사건이 보이지 않는다"고 한 줄로 말한다.
+5. 마지막에 "정리하면 …"으로 가장 유력한 설명을 한 문장으로 맺는다. 확정이 아니라 자료로 본 추론임을 드러낸다("…로 보인다").
+6. 앞으로 오를지·내릴지 예측하거나 사라·팔라는 말은 하지 않는다. 6~10문장 안팎으로 쓴다."""
 
 
 BIG = re.compile(r"(?<![\d.])(\d{1,3}(?:,\d{3}){2,})(\s*원)?")
@@ -365,13 +410,84 @@ def answer(state: State) -> State:
         w({"type": "token", "text": text})
         return {"answer": text}
     w({"type": "status", "text": "근거를 바탕으로 답변을 쓰는 중"})
-    msgs = [{"role": "system", "content": ANSWER_SYS},
-            {"role": "user", "content": f"[근거]\n{evidence_block(ev)}\n\n[질문]\n{state['question']}"}]
-    parts = []
-    for piece in llm.stream(msgs, max_tokens=ANSWER_MAX_TOKENS):
-        parts.append(piece)
-        w({"type": "token", "text": piece})
-    return {"answer": "".join(parts).strip()}
+    move = any(e.doc_id == "tool:market" for e in ev)
+    # 질문의 전제가 틀렸으면(오르지 않았는데 왜 오르냐) 첫 문장은 코드가 쓴다 - 작은 모델은 전제를 따라 원인을 지어낸다
+    lead = premise_correction(ev)
+    msgs = [{"role": "system", "content": ANSWER_SYS + (MOVE_SYS if move else "")},
+            {"role": "user", "content": f"[근거]\n{evidence_block(ev)}\n\n[질문]\n{state['question']}" + (
+                f"\n\n[이미 쓴 첫 문장]\n{lead}\n그 다음 문장부터 이어 쓴다. 질문이 말한 방향의 원인을 지어내지 말고, "
+                "실제 움직임과 그 요인을 설명한다." if lead else "")}]
+    # 문장이 끝날 때마다(인용 번호 뒤) 출처 이름을 바로잡아 내보낸다 - 사용자는 고친 문장만 본다
+    parts, buf, fixed = [], "", 0
+    if lead:
+        parts.append(lead + " ")
+        w({"type": "token", "text": lead + " "})
+    def flush(upto: int):
+        nonlocal buf, fixed
+        out, n = fix_attribution(buf[:upto], ev)
+        if lead and not parts[1:]:                  # 모델이 코드가 쓴 첫 문장을 되풀이하면 뺀다
+            for sent in re.split(r"(?<=[.\]])\s+", lead):
+                out = out.replace(sent, "", 1) if sent.strip() else out
+            out = out.lstrip()
+        buf, fixed = buf[upto:], fixed + n
+        if out:
+            parts.append(out)
+            w({"type": "token", "text": out})
+    for piece in llm.stream(msgs, max_tokens=ANSWER_MAX_TOKENS + (400 if move else 0)):
+        buf += piece
+        ends = [m.end() for m in SENT_END.finditer(buf)]
+        if ends:
+            flush(ends[-1])
+    flush(len(buf))
+    return {"answer": "".join(parts).strip(), "attribution_fixed": fixed}
+
+
+PREMISE = re.compile(r"질문은 (상승|하락) 이유를 묻지만 실제로는 5거래일 ([+-][\d.]+%), 20거래일 ([+-][\d.]+%)")
+
+
+def premise_correction(ev: list[Evidence]) -> str:
+    """요인 비교 근거의 '※ 질문 확인' 줄 → 답변 첫 문장"""
+    for e in ev:
+        m = PREMISE.search(e.text) if e.doc_id == "tool:market" else None
+        if m:
+            name = e.title.replace(" 등락 요인 비교", "")
+            return (f"질문과 달리 {name} 주가는 최근 뚜렷하게 {'오르지' if m.group(1) == '상승' else '내리지'} 않았습니다. "
+                    f"5거래일 {m.group(2)}, 20거래일 {m.group(3)}입니다[{e.n}].")
+    return ""
+
+
+# 문장 끝: 인용 번호(와 마침표) 뒤의 공백, 또는 줄바꿈
+SENT_END = re.compile(r"\][.!?]?(?=\s)|\n")
+
+
+def fix_attribution(text: str, ev: list[Evidence]) -> tuple[str, int]:
+    """'한국경제TV 보도에 따르면 …[6].'인데 [6]이 뉴스1 기사면 언론사 이름을 [6]의 언론사로 바꾼다.
+    작은 모델은 근거 목록에서 옆 번호의 언론사를 가져다 쓰는 일이 잦다. 내용은 번호의 근거에서 왔다고 보고 이름을 고친다
+    (번호가 여러 개면 그중 하나라도 맞으면 그대로, 모두 같은 다른 언론사를 가리킬 때만 고친다)."""
+    pubs = sorted({e.publisher for e in ev if e.publisher and e.kind != "data" and e.source_type != "dart"},
+                  key=len, reverse=True)
+    if not pubs:
+        return text, 0
+    by_n = {e.n: e for e in ev}
+    fixed = 0
+    out = []
+    for sent in re.split(r"((?<=[.!?])\s+|\n)", text):
+        cited = [by_n[int(n)] for n in re.findall(r"\[(\d+)\]", sent) if int(n) in by_n]
+        cited_pubs = {e.publisher for e in cited if e.kind != "data"}
+        if len(cited_pubs) == 1 and None not in cited_pubs:
+            right = next(iter(cited_pubs))
+            taken = []                              # 긴 이름부터 ('한국경제TV'를 '한국경제'로 잘못 잡지 않게)
+            for p in pubs:
+                for m in re.finditer(re.escape(p), sent):
+                    if any(a < m.end() and m.start() < b for a, b in taken):
+                        continue
+                    taken.append((m.start(), m.end()))
+            wrong = [(a, b) for a, b in taken if sent[a:b] != right and sent[b:b + 6].lstrip().startswith(("보도", "는", "은", "에", "기사"))]
+            for a, b in sorted(wrong, reverse=True):
+                sent = sent[:a] + right + sent[b:]
+                fixed += 1
+        out.append(sent)
+    return "".join(out), fixed
 
 
 # ---- 5. 검증 ------------------------------------------------------------------------
@@ -441,6 +557,8 @@ def verify(state: State) -> State:
     ev = state.get("evidence") or []
     checks = verify_answer(state.get("answer", ""), ev) if ev else {}
     if checks:                                   # 답변 품질을 트레이스 점수로 (Langfuse 에서 낮은 답변만 골라 보기)
+        checks["attribution_fixed"] = state.get("attribution_fixed", 0)
+        obs.score("attribution_fixed", float(checks["attribution_fixed"]))
         if checks.get("numbers"):
             obs.score("number_support", checks["numbers_supported"] / checks["numbers"])
         obs.score("has_citation", float(checks.get("has_citation", False)))

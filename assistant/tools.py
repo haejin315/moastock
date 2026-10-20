@@ -5,11 +5,14 @@
   price_history  기간 주가 흐름 (사이트 /api/chart 일봉: 기간 수익률·최고·최저)
   screen         조건 검색 (스냅샷 전 종목: 업종·지표 조건·정렬)
   relations      회사 관계 (지식 그래프: 최대주주·종속회사·계열회사·임원) - kg.py
+  market         등락 요인 비교 (종목·지수·같은 업종·해외 지표·환율 등락과 시장/업종/종목 고유 몫 계산, 최근 공시 목록)
 
 도구 결과는 모두 사실 데이터다. 해석·매매 판단은 하지 않는다(답변 규칙).
 """
 from __future__ import annotations
 
+import re
+import statistics
 import threading
 import time
 from datetime import datetime, timedelta
@@ -153,6 +156,102 @@ def price_history(codes: list[str], days: int = 30) -> list[Evidence]:
         out.append(_ev("price_history", f"{s['name']} 최근 {days}일 주가", text,
                        f"{SITE}/stock.html?code={s['code']}", end))
     return out
+
+
+# ---- 등락 요인 분해 ---------------------------------------------------------------------
+
+# 업종 단어 → 비교할 해외 지표 (없으면 S&P500·나스닥)
+OVERSEAS = [("반도체", [("^SOX", "미국 필라델피아 반도체지수"), ("MU", "마이크론"), ("NVDA", "엔비디아")]),
+            ("자동차", [("^GSPC", "미국 S&P500"), ("TM", "도요타")]),
+            ("전기제품|화학|배터리|이차전지", [("^GSPC", "미국 S&P500"), ("TSLA", "테슬라")])]
+OVERSEAS_DEFAULT = [("^GSPC", "미국 S&P500"), ("^IXIC", "미국 나스닥")]
+
+
+def _closes(symbol: str) -> list[tuple[datetime, float]]:
+    r = _http.get(f"{SITE}/api/chart", params={"symbol": symbol, "tf": "day"}, timeout=20)
+    r.raise_for_status()
+    return [(datetime.fromtimestamp(k["time"], KST), k["close"]) for k in r.json().get("candles", []) if k.get("close")]
+
+
+def _ret(closes, n: int) -> float | None:
+    """최근 n거래일 등락률(%) - 마지막 종가 / n거래일 전 종가"""
+    if len(closes) <= n:
+        return None
+    return (closes[-1][1] / closes[-1 - n][1] - 1) * 100
+
+
+def _pct(v: float | None) -> str:
+    return "-" if v is None else f"{v:+.1f}%"
+
+
+def market_context(code: str, recent_disclosures: list[tuple[str, str]] | None = None,
+                   asked: str | None = None) -> list[Evidence]:
+    """종목의 등락을 시장 전체·같은 업종·해외 비교 지표·환율과 나란히 놓고, 등락을 몫으로 나눈다(계산).
+    recent_disclosures: [(날짜, 공시 제목)] - 최근 회사 공시 (회사 고유 사건이 있었는지 보는 용도)
+    asked: 질문이 묻는 방향 "상승"|"하락" - 실제 움직임과 다르면 그 사실을 근거에 적는다 (작은 모델은 전제를 따라가 버린다)"""
+    from concurrent.futures import ThreadPoolExecutor
+    s = _stock(code)
+    if not s:
+        return []
+    index = ("^KQ11", "코스닥") if s.get("market") == "KOSDAQ" else ("^KS11", "코스피")
+    industry = s.get("industry") or ""
+    peers = sorted((p for p in snapshot()["stocks"] if p.get("industry") == industry and p["code"] != code
+                    and p.get("marketCap")), key=lambda p: -p["marketCap"])[:5]
+    overseas = next((o for pat, o in OVERSEAS if re.search(pat, industry)), OVERSEAS_DEFAULT)
+    series = [(_symbol(s), s["name"]), index] + [(_symbol(p), p["name"]) for p in peers] + overseas + [("KRW=X", "원달러 환율")]
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        got = list(pool.map(lambda sym: _safe_closes(sym[0]), series))
+    data = {sym: c for (sym, _), c in zip(series, got)}
+    own, idx = data[_symbol(s)], data[index[0]]
+    if len(own) < 21:
+        return []
+    at = own[-1][0]
+    lines = [f"{s['name']}({s['code']}) 등락 비교 - 마지막 거래일 {at:%Y-%m-%d} 기준 등락률"]
+    def row(label, c):
+        return f"{label}: 1일 {_pct(_ret(c, 1))}, 5거래일 {_pct(_ret(c, 5))}, 20거래일 {_pct(_ret(c, 20))}" + (
+            f" (마지막 {c[-1][0]:%m-%d})" if c and c[-1][0].date() != at.date() else "")
+    lines.append(row(s["name"], own))
+    lines.append(row(index[1], idx))
+    peer_rets = {n: [_ret(data[_symbol(p)], n) for p in peers if data[_symbol(p)]] for n in (1, 5, 20)}
+    if peers:
+        lines.append(f"같은 업종({industry}) 시가총액 상위 {len(peers)}종목: " +
+                     ", ".join(f"{p['name']} {_pct(_ret(data[_symbol(p)], 5))}" for p in peers) + " (5거래일)")
+    for sym, label in overseas + [("KRW=X", "원달러 환율")]:
+        if data[sym]:
+            lines.append(row(label, data[sym]))
+    # 몫 나누기 (단순 차감): 시장 = 지수 등락, 업종 = 업종 평균 - 지수, 종목 고유 = 종목 - 업종 평균
+    for n in (1, 5, 20):
+        r, m = _ret(own, n), _ret(idx, n)
+        vals = [v for v in peer_rets.get(n, []) if v is not None]
+        if r is None or m is None:
+            continue
+        sec = statistics.median(vals) if vals else m     # 한 종목 급등락에 끌려가지 않게 중앙값
+        parts = {"시장 전체": m, "업종": sec - m, "종목 고유": r - sec}
+        big = max(parts, key=lambda k: abs(parts[k]) if parts[k] * r > 0 else -1)
+        lines.append(f"{'1일' if n == 1 else f'{n}거래일'} 등락 {r:+.1f}% 나누기(계산): 시장 전체 {m:+.1f}%p, 업종 {sec - m:+.1f}%p, "
+                     f"종목 고유 {r - sec:+.1f}%p → 가장 큰 몫은 '{big}'")
+    r5, r20 = _ret(own, 5), _ret(own, 20)
+    if asked and r5 is not None and r20 is not None:
+        sign = 1 if asked == "상승" else -1
+        if r5 * sign < 2 and r20 * sign < 2:          # 5·20거래일 모두 물은 방향으로 2% 넘게 움직이지 않았다
+            lines.insert(1, f"※ 질문 확인(계산): 질문은 {asked} 이유를 묻지만 실제로는 5거래일 {r5:+.1f}%, 20거래일 {r20:+.1f}%로 "
+                            f"뚜렷한 {asked}이 아니다")
+    out = [_ev("market", f"{s['name']} 등락 요인 비교", "\n".join(lines), f"{SITE}/stock.html?code={s['code']}", at)]
+    if recent_disclosures is not None:
+        text = (f"{s['name']} 최근 14일 공시 {len(recent_disclosures)}건" +
+                ("\n" + "\n".join(f"{d} {t}" for d, t in recent_disclosures[:12]) if recent_disclosures else
+                 " - 이 기간 회사 공시 없음"))
+        out.append(_ev("disclosures", f"{s['name']} 최근 공시 목록", text, f"{SITE}/stock.html?code={s['code']}",
+                       datetime.now(KST)))
+    return out
+
+
+def _safe_closes(symbol: str):
+    try:
+        return _closes(symbol)
+    except Exception as e:                 # 비교 지표 하나가 없어도 나머지로
+        print(f"[market] {symbol} 실패: {e!r}", flush=True)
+        return []
 
 
 SCREEN_FIELDS = {"per", "pbr", "dividendYield", "marketCap", "foreignRate", "change", "eps", "price", "value"}

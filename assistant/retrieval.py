@@ -149,6 +149,7 @@ def keyword_hits(query: str, vec, where: list[str], args: list, *, kind: str | N
 
 
 _http = None
+RERANK_BATCH = 64                     # 리랭커 서버의 --max-client-batch-size 와 같게
 
 
 @obs.observe(name="rerank", capture_input=False, capture_output=False)
@@ -161,10 +162,13 @@ def rerank(query: str, rows: list, titles: dict) -> list | None:
         import requests
         _http = _http or requests.Session()
         texts = [f"{titles.get(r[1], '')}\n{r[2][:1200]}" for r in rows]
-        res = _http.post(f"{RERANK_URL.rstrip('/')}/rerank", json={"query": query, "texts": texts, "truncate": True},
-                         timeout=20)
-        res.raise_for_status()
-        order = sorted(res.json(), key=lambda x: -x["score"])
+        order = []
+        for i in range(0, len(texts), RERANK_BATCH):       # 서버 한 번 요청 한도(--max-client-batch-size)씩 나눠 보낸다
+            res = _http.post(f"{RERANK_URL.rstrip('/')}/rerank", timeout=20,
+                             json={"query": query, "texts": texts[i:i + RERANK_BATCH], "truncate": True})
+            res.raise_for_status()
+            order += [{"index": o["index"] + i, "score": o["score"]} for o in res.json()]
+        order.sort(key=lambda x: -x["score"])
         return [rows[o["index"]][:5] + (float(o["score"]), rows[o["index"]][6]) for o in order]
     except Exception as e:
         print(f"[rerank] 실패, 벡터 순서 사용: {e!r}", flush=True)
