@@ -2,7 +2,7 @@
 
   python eval/gate.py <결과.json> --tag <회차> [--source airflow] [--max-drop 0.05]
 
-비교 대상은 같은 문항 수의 직전 통과 회차 (3문항 시험 실행과 42문항 정기 실행을 섞어 비교하지 않게).
+비교 대상은 같은 문항 수의 직전 통과 회차 (도구 선택률·등락 원인 추론률은 summary 에서) (3문항 시험 실행과 42문항 정기 실행을 섞어 비교하지 않게).
 2026-10-18 까지의 Kubeflow 회차(source kfp-local)도 기준으로 이어 쓴다.
 결과는 dbt 모델 analytics.eval_history 가 읽는다. Airflow DAG moastock_eval_weekly 가 매주 부른다.
 """
@@ -14,6 +14,7 @@ import sys
 import psycopg
 
 METRICS = ["route_accuracy", "dart_hit_cited", "number_support_rate"]
+EXTRA = ["tool_choice_accuracy", "move_reasoning_rate"]      # 표 열이 없는 지표는 summary(jsonb)에서 비교
 
 
 def main():
@@ -31,14 +32,15 @@ def main():
         created_at timestamptz DEFAULT now(), questions int, route_accuracy double precision,
         dart_hit_evidence double precision, dart_hit_cited double precision, number_support_rate double precision,
         latency_p50_ms int, latency_p95_ms int, passed boolean, summary jsonb)""")
-    prev = con.execute(f"""SELECT run_id, {', '.join(METRICS)} FROM eval.runs
+    prev = con.execute(f"""SELECT run_id, {', '.join(METRICS)}, {', '.join(f"(summary->>'{m}')::float" for m in EXTRA)}
+                           FROM eval.runs
                            WHERE questions = %s AND passed ORDER BY created_at DESC LIMIT 1""",
                        (s["questions"],)).fetchone()
     reasons = []
     if s.get("answers_with_invalid_citation"):
         reasons.append(f"없는 번호 인용 {s['answers_with_invalid_citation']}건")
     if prev:
-        for name, old in zip(METRICS, prev[1:]):
+        for name, old in zip(METRICS + EXTRA, prev[1:]):
             new = s.get(name)
             if old is not None and new is not None and new < old - a.max_drop:
                 reasons.append(f"{name} {old:.3f} → {new:.3f}")

@@ -40,3 +40,8 @@
 {"id": "tool-6", "kind": "tool", "question": "에코프로 주요 종속회사 알려줘", "expect": {"route": "answer", "tools": ["relations"]}}
 {"id": "tool-7", "kind": "tool", "question": "현대차 주가랑 최근 뉴스 같이 알려줘", "expect": {"route": "answer", "tools": ["quote", "docs"]}}
 {"id": "tool-8", "kind": "tool", "question": "배당수익률 5% 이상인 코스피 종목 찾아줘", "expect": {"route": "answer", "tools": ["screen"]}}
+{"id": "move-1", "kind": "move", "question": "지금 하이닉스 왜이리 떨어지지?", "expect": {"route": "answer", "tools": ["quote", "market"], "stock": "SK하이닉스"}}
+{"id": "move-2", "kind": "move", "question": "삼성전자 요즘 왜 이렇게 빠져?", "expect": {"route": "answer", "tools": ["quote", "market"], "stock": "삼성전자"}}
+{"id": "move-3", "kind": "move", "question": "LG화학 오늘 왜 떨어졌어?", "expect": {"route": "answer", "tools": ["quote", "market"], "stock": "LG화학"}}
+{"id": "move-4", "kind": "move", "question": "카카오 왜 올랐어?", "expect": {"route": "answer", "tools": ["quote", "market"], "stock": "카카오"}}
+{"id": "move-5", "kind": "move", "question": "현차 주가 하락 이유가 뭐야?", "expect": {"route": "answer", "tools": ["quote", "market"], "stock": "현대차"}}

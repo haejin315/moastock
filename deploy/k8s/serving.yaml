@@ -153,7 +153,10 @@ spec:
   replicas: 1
   selector: { matchLabels: { app: assistant } }
   template:
-    metadata: { labels: { app: assistant } }
+    metadata:
+      labels: { app: assistant }
+      # 운영 지표(질문 수·응답 시간·수집량)는 :9100 - 터널 대상(:8100)과 따로 둬서 밖으로 나가지 않는다
+      annotations: { prometheus.io/scrape: "true", prometheus.io/port: "9100" }
     spec:
       containers:
         - name: assistant
@@ -170,7 +173,7 @@ spec:
             - { name: DART_API_KEY, valueFrom: { secretKeyRef: { name: moastock-env, key: DART_API_KEY } } }
           envFrom:
             - secretRef: { name: observability, optional: true }   # LANGFUSE_* (키가 들어오면 추적이 켜진다)
-          ports: [{ containerPort: 8100 }]
+          ports: [{ containerPort: 8100 }, { containerPort: 9100, name: metrics }]
           resources: { requests: { cpu: 300m, memory: 1Gi }, limits: { memory: 4Gi } }
           volumeMounts: [{ name: rag, mountPath: /data/rag }]
           readinessProbe: { httpGet: { path: /health, port: 8100 }, periodSeconds: 10 }

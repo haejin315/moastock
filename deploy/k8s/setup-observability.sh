@@ -11,6 +11,8 @@
 #   GRAFANA_LOKI_URL=https://logs-prod-XXX.grafana.net/loki/api/v1/push
 #   GRAFANA_LOKI_USER=7654321                          (Loki 인스턴스 ID)
 #   GRAFANA_API_TOKEN=glc_...                          (Access Policy 토큰: metrics:write, logs:write)
+#   GRAFANA_URL=https://<스택>.grafana.net             (대시보드·알림 올리기: python deploy/grafana/push.py)
+#   GRAFANA_SA_TOKEN=glsa_...                          (Grafana 서비스 계정 토큰, Editor - 클러스터에는 넣지 않는다)
 #   ALERT_WEBHOOK_URL=https://discord.com/api/webhooks/...   (Airflow 작업 실패 알림, Slack 수신 웹훅도 된다)
 set -euo pipefail
 cd "$(dirname "$0")/../.."
@@ -25,7 +27,7 @@ kubectl -n moastock create secret generic observability \
   --from-env-file=<(grep -E '^LANGFUSE_' "$ENV") --dry-run=client -o yaml | kubectl apply -f -
 if grep -q '^GRAFANA_API_TOKEN=.' "$ENV"; then
   kubectl -n moastock create secret generic grafana-cloud \
-    --from-env-file=<(grep -E '^GRAFANA_' "$ENV") --dry-run=client -o yaml | kubectl apply -f -
+    --from-env-file=<(grep -E '^GRAFANA_(PROM|LOKI|API)_' "$ENV") --dry-run=client -o yaml | kubectl apply -f -
   kubectl apply -f deploy/k8s/observability.yaml
   kubectl -n moastock rollout restart deploy/alloy
 fi

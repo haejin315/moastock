@@ -73,6 +73,15 @@ def run_one(q, tag: str = ""):
         res["tools_ok"] = all(t in chosen for t in tools_want)
         res["tool_evidence"] = any(e.get("type") == "data" or "관계 그래프" in (e.get("publisher") or "")
                                    for e in out["evidence"])
+    if q["kind"] == "move":             # 등락 원인 질문: 종목을 알아보고, 요인 비교를 인용하고, 원인 기사를 2개 넘게 인용하는지
+        stock = q["expect"].get("stock")
+        factor = [e["n"] for e in out["evidence"] if (e.get("title") or "").endswith("등락 요인 비교")]
+        news = {e["n"] for e in out["evidence"] if e.get("type") == "news"}
+        res["move_stock_ok"] = not stock or stock in ((out["plan"] or {}).get("stocks") or [])
+        res["move_factor_cited"] = any(n in cited for n in factor)
+        res["move_causes_cited"] = len(news & set(cited)) >= 2
+        res["move_ok"] = res["move_stock_ok"] and res["move_factor_cited"] and res["move_causes_cited"]
+        obs.score("move_ok", float(res["move_ok"]))
     want = q["expect"].get("doc_id")
     if want:
         rno = want.split(":", 1)[1]
@@ -108,6 +117,7 @@ def summarize(rs):
         "dart_hit_equivalent": rate(r.get("hit_equiv", r["hit"]) for r in rs if "hit" in r),
         "tool_choice_accuracy": rate(r["tools_ok"] for r in rs if "tools_ok" in r),
         "tool_evidence_rate": rate(r["tool_evidence"] for r in rs if "tool_evidence" in r),
+        "move_reasoning_rate": rate(r["move_ok"] for r in rs if "move_ok" in r),
         "answers_with_citation": rate(r["checks"].get("has_citation", False) for r in ans),
         "answers_with_invalid_citation": sum(1 for r in ans if r["checks"].get("invalid_citations")),
         "number_support_rate": round(sup / nums, 3) if nums else None,

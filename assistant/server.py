@@ -23,10 +23,12 @@ from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+import metrics
 import observability as obs
 from graph import GRAPH
 
 app = FastAPI(title="moastock assistant")
+metrics.start()                                                  # :9100/metrics (Grafana 대시보드·알림)
 SHARED_SECRET = os.environ.get("ASSIST_SHARED_SECRET", "")     # Worker ↔ 이 서버 사이 인증 (운영 필수)
 
 
@@ -56,14 +58,27 @@ async def ask(body: Ask, x_assist_secret: str | None = Header(default=None)):
         # LangGraph 흐름은 동기 코드(모델·DB 호출) - 별도 스레드에서 돌리고 이벤트를 큐로 넘긴다
         t0 = time.perf_counter()
         obs.trace(name="assistant.ask", input=question, tags=["site"])
+        first, outcome = None, "error"
         try:
             for ev in GRAPH.stream({"question": question}, stream_mode="custom"):
-                loop.call_soon_threadsafe(queue.put_nowait, (ev.pop("type"), ev))
+                kind = ev.pop("type")
+                if kind == "token" and first is None:
+                    first = time.perf_counter() - t0
+                    metrics.FIRST_TOKEN.observe(first)
+                elif kind == "plan":
+                    metrics.INTENT.labels(ev.get("intent") or "-").inc()
+                elif kind == "done":
+                    outcome = metrics.observe_done(ev.get("checks") or {})
+                loop.call_soon_threadsafe(queue.put_nowait, (kind, ev))
+            if outcome == "error":                                # 매매 권유 거절·범위 밖은 done 없이 안내문만 나간다
+                outcome = "declined"
         except Exception as e:                                    # 내부 오류 내용은 사용자에게 그대로 보이지 않게
             print("[ask] error:", repr(e), flush=True)
             obs.span(level="ERROR", status_message=repr(e))
             loop.call_soon_threadsafe(queue.put_nowait, ("error", {"message": "답변을 만들지 못했습니다. 잠시 후 다시 시도해 주세요."}))
         finally:
+            metrics.ASK.labels(outcome).inc()
+            metrics.ASK_SECONDS.observe(time.perf_counter() - t0)
             loop.call_soon_threadsafe(queue.put_nowait, ("_end", {"ms": round((time.perf_counter() - t0) * 1000)}))
 
     threading.Thread(target=run, args=(body.question.strip(),), daemon=True).start()

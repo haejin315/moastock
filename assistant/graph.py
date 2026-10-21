@@ -21,6 +21,7 @@ from langgraph.config import get_stream_writer
 from langgraph.graph import END, StateGraph
 
 import llm
+import metrics
 import observability as obs
 from config import ANSWER_MAX_TOKENS, DEFAULT_DAYS, DISCLAIMER, ROOT
 
@@ -301,6 +302,7 @@ def gather(state: State) -> State:
                 results[name] = f.result(timeout=60)
             except Exception as e:                       # 도구 하나가 실패해도 나머지로 답한다
                 print(f"[tool] {name} 실패: {e!r}", flush=True)
+                metrics.TOOL_FAIL.labels(name).inc()
                 results[name] = ([], [f"{name} 자료를 가져오지 못해 그 자료 없이 답했습니다"])
     ev = []
     for step in plan:                                    # 데이터 도구 → 문서 순으로 번호를 매긴다
