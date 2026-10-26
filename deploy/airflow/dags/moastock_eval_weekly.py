@@ -1,4 +1,4 @@
-"""매주 AI 비서 점검: 사이트 경로 점검 → RAG 평가 42문항 → 회귀 검사. 일요일 16시 (VM 운영 시간 안).
+"""매주 AI 비서 점검: 사이트 경로 점검 → RAG 평가 47문항 → 회귀 검사. 일요일 16시 (VM 운영 시간 안).
 
   probe ─▶ rag_eval (run_eval ▶ gate)
 
@@ -14,15 +14,19 @@ from datetime import datetime
 import pendulum
 from airflow.sdk import DAG
 
+from kubernetes.client import models as k8s
+
 from moastock_common import DEFAULT_ARGS, DSN, pod
 
 KST = pendulum.timezone("Asia/Seoul")
 APP_ENV = {"ASSIST_LLM_BASE_URL": "http://llm:8000/v1", "ASSIST_PG_DSN": DSN, "MOARAG_EMBED_URL": "http://embed:80",
            "ASSIST_RERANK_URL": "http://rerank:80", "PYTHONUNBUFFERED": "1"}
+# Langfuse 키(LANGFUSE_*) - 평가 문항마다 트레이스가 남아 틀린 문항을 화면에서 바로 본다 (없으면 추적 없이 돈다)
+LANGFUSE = [k8s.V1EnvFromSource(secret_ref=k8s.V1SecretEnvSource(name="observability", optional=True))]
 
 with DAG(
     dag_id="moastock_eval_weekly",
-    description="사이트 경로 점검 + RAG 평가 42문항 → 지표 기록·회귀 감지",
+    description="사이트 경로 점검 + RAG 평가 47문항 → 지표 기록·회귀 감지",
     schedule="0 16 * * 0",
     start_date=datetime(2026, 10, 15, tzinfo=KST),
     catchup=False,
@@ -39,6 +43,6 @@ with DAG(
          'cd /app/assistant && T="af-$(TZ=Asia/Seoul date +%Y%m%d-%H%M)" L="{{ params.limit }}" && '
          'python eval/run_eval.py --tag "$T" --out /tmp/eval.json $([ "$L" != 0 ] && echo --limit "$L") && '
          'python eval/gate.py /tmp/eval.json --tag "$T" --max-drop "{{ params.max_drop }}"'],
-        env=APP_ENV, mem="4Gi", timeout_min=120, trigger_rule="all_done")
+        env=APP_ENV, env_from=LANGFUSE, mem="4Gi", timeout_min=120, trigger_rule="all_done")
 
     probe >> rag_eval
