@@ -2,7 +2,7 @@
 
   python -m moarag.kg_build          (서버에서, 운영 DB 기준. 매일 증분 뒤에 다시 돌려도 된다 - 통째로 새로 만든다)
 
-회사마다 가장 최근 정기보고서(사업·반기·분기) 하나만 쓴다. 표는 collect_dart 가 '| 열: …' 머리글과
+관계 종류마다 그 표가 있는 가장 최근 정기보고서(사업·반기·분기)를 쓴다 (최근 4개, 400일 안). 표는 collect_dart 가 '| 열: …' 머리글과
 '| 행이름 — 값 · 값' 행으로 펴 둔 형식을 다시 열 이름 → 값으로 맞춰 읽는다.
 
 간선 (src → dst):
@@ -25,6 +25,9 @@ from .config import PG_DSN, SNAPSHOT
 from .metrics import Stage
 
 PERIODIC = r"사업보고서|반기보고서|분기보고서"
+RELS = {"최대주주등", "최대주주", "종속회사", "계열회사", "임원"}
+FALLBACK_REPORTS = 4         # 회사당 최대 몇 개 보고서까지 거슬러 올라가 빈 관계를 채우나 (분기·반기·분기·사업)
+FALLBACK_DAYS = 400          # 최신 보고서보다 이만큼 넘게 오래된 보고서는 쓰지 않는다 (지난 사업보고서까지)
 TABLE_HEAD, TABLE_ROW = "| 열: ", "| "
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS kg_edge (
@@ -167,21 +170,33 @@ def main():
     con = psycopg.connect(PG_DSN, autocommit=True)
     with Stage("kg_build") as st:
         t0 = time.perf_counter()
-        # 회사마다 가장 최근 정기보고서
-        latest = con.execute(
-            "SELECT DISTINCT ON (stock_codes[1]) doc_id, stock_codes[1], corp_name, published_at FROM doc "
-            "WHERE source_type = 'dart' AND report_nm ~ %s AND cardinality(stock_codes) > 0 "
-            "ORDER BY stock_codes[1], published_at DESC", (PERIODIC,)).fetchall()
+        # 회사마다 최근 정기보고서들 (새것부터). 관계 종류마다 그 표가 있는 가장 최근 보고서를 쓴다 -
+        # 분기보고서는 계열회사·종속회사 표 등을 생략하는 일이 많아, 최신 하나만 쓰면 11월(3분기)마다 그래프가 쪼그라든다
+        reports = {}
+        for doc_id, code, corp, as_of in con.execute(
+                "SELECT doc_id, stock_codes[1], corp_name, published_at FROM doc "
+                "WHERE source_type = 'dart' AND report_nm ~ %s AND cardinality(stock_codes) > 0 "
+                "ORDER BY stock_codes[1], published_at DESC", (PERIODIC,)):
+            got = reports.setdefault(code, [])
+            if len(got) < FALLBACK_REPORTS and (not got or (got[0][3] - as_of).days <= FALLBACK_DAYS):
+                got.append((doc_id, code, corp, as_of))
         rows = []
-        for doc_id, code, corp, as_of in latest:
-            body = con.execute("SELECT body FROM doc WHERE doc_id = %s", (doc_id,)).fetchone()[0]
-            for e in extract(code, corp, body):
-                e.update(doc_id=doc_id, as_of=as_of,
-                         dst_code=name_to_code.get(corp_key(e["dst_name"])))
-                if e["src_code"] is None:
-                    e["src_code"] = name_to_code.get(corp_key(e["src_name"]))
-                rows.append(e)
-            st.add(reports=1)
+        for code, docs in reports.items():
+            have = set()                                 # 이미 채운 관계 종류
+            for doc_id, _, corp, as_of in docs:
+                body = con.execute("SELECT body FROM doc WHERE doc_id = %s", (doc_id,)).fetchone()[0]
+                found = [e for e in extract(code, corp, body) if e["rel"] not in have]
+                for e in found:
+                    e.update(doc_id=doc_id, as_of=as_of,
+                             dst_code=name_to_code.get(corp_key(e["dst_name"])))
+                    if e["src_code"] is None:
+                        e["src_code"] = name_to_code.get(corp_key(e["src_name"]))
+                    rows.append(e)
+                have |= {e["rel"] for e in found}
+                st.add(reports=1)
+                if have >= RELS:
+                    break
+            st.add(companies=1)
         with con.transaction():
             con.execute("DROP TABLE IF EXISTS kg_edge_new")
             con.execute(SCHEMA.replace("kg_edge", "kg_edge_new"))

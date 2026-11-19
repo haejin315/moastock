@@ -14,6 +14,7 @@
 #   GRAFANA_URL=https://<스택>.grafana.net             (대시보드·알림 올리기: python deploy/grafana/push.py)
 #   GRAFANA_SA_TOKEN=glsa_...                          (Grafana 서비스 계정 토큰, Editor - 클러스터에는 넣지 않는다)
 #   ALERT_WEBHOOK_URL=https://discord.com/api/webhooks/...   (Airflow 작업 실패 알림, Slack 수신 웹훅도 된다)
+#   GITHUB_DISPATCH_TOKEN=github_pat_...               (일일 스냅샷 실행용. 세분화 토큰: moastock 저장소, Actions 읽기·쓰기만)
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 ENV=deploy/gcp/observability.env
@@ -35,6 +36,11 @@ fi
 if kubectl -n moastock create secret generic alerts --from-env-file=<(grep -E '^ALERT_WEBHOOK_URL=' "$ENV") \
      --dry-run=client -o yaml | kubectl apply -f - | grep -Eq "configured|created"; then
   kubectl -n moastock rollout restart deploy/airflow
+fi
+# 일일 스냅샷을 장 마감 직후 GitHub 에서 돌리게 하는 토큰 (DAG moastock_snapshot). 파드가 뜰 때 읽으므로 재시작은 필요 없다
+if grep -q '^GITHUB_DISPATCH_TOKEN=.' "$ENV"; then
+  kubectl -n moastock create secret generic github --from-env-file=<(grep -E '^GITHUB_DISPATCH_TOKEN=' "$ENV") \
+    --dry-run=client -o yaml | kubectl apply -f -
 fi
 kubectl -n moastock rollout restart deploy/assistant
 kubectl -n moastock rollout status deploy/assistant --timeout=180s

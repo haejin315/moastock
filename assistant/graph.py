@@ -54,7 +54,9 @@ class State(TypedDict, total=False):
 # ---- 1. 질문 해석 ---------------------------------------------------------------------
 
 # '최근 소식'·'요즘'처럼 기간 없이 최신 자료를 원하는 질문: 2주로 좁히고 새 자료일수록 점수를 더 준다
-RECENT = re.compile(r"최근\s*(?:소식|뉴스|기사|동향|이슈|근황|공시|발표|이야기|상황)|요즘|근황|최신\s*(?:소식|뉴스|기사|동향|공시)")
+# ('최근 주가 흐름과 관련 뉴스'처럼 사이에 다른 말이 끼어도 잡는다)
+RECENT = re.compile(r"최근[^.?!\d]{0,12}?(?:소식|뉴스|기사|동향|이슈|근황|공시|발표|이야기|상황)|요즘|근황"
+                    r"|최신[^.?!\d]{0,8}?(?:소식|뉴스|기사|동향|공시)")
 _PERIOD = [(r"오늘|금일", 2), (r"어제|전일", 3), (r"이번\s*주|최근\s*일주일|지난\s*주", 10),
            (r"이번\s*달|한\s*달|최근\s*1\s*개월|지난\s*달", 35), (r"최근\s*(\d+)\s*일", None),
            (r"최근\s*(\d+)\s*주", None), (r"최근\s*(\d+)\s*개월", None), (r"올해|연초", 280),
@@ -426,7 +428,7 @@ def answer(state: State) -> State:
         w({"type": "token", "text": lead + " "})
     def flush(upto: int):
         nonlocal buf, fixed
-        out, n = fix_attribution(buf[:upto], ev)
+        out, n = fix_attribution(tidy_spacing(buf[:upto]), ev)
         if lead and not parts[1:]:                  # 모델이 코드가 쓴 첫 문장을 되풀이하면 뺀다
             for sent in re.split(r"(?<=[.\]])\s+", lead):
                 out = out.replace(sent, "", 1) if sent.strip() else out
@@ -456,6 +458,17 @@ def premise_correction(ev: list[Evidence]) -> str:
             return (f"질문과 달리 {name} 주가는 최근 뚜렷하게 {'오르지' if m.group(1) == '상승' else '내리지'} 않았습니다. "
                     f"5거래일 {m.group(2)}, 20거래일 {m.group(3)}입니다[{e.n}].")
     return ""
+
+
+# 작은 모델은 숫자와 단위를 띄어 쓴다 ('2026 년 11 월', '193,500 원', '-8.51% 를'). 원문 자료는 붙여 쓰므로 붙인다.
+# 단위 뒤가 다른 낱말이 되는 경우(일본·조사·주가·원인 등)는 건드리지 않는다
+NUM_UNIT_GAP = re.compile(r"(\d) (?=(?:년|월|일(?!본)|원(?!인|래|칙)|억|조(?![사정건치])|만(?!약|큼)|천(?!만에)|주(?![가식주요의])"
+                          r"|개|배|명|건|위|차|분기|거래일|%p|bp)(?![A-Za-z]))")
+PCT_PARTICLE = re.compile(r"%\s+(?=(?:를|을|로|으로|에|에서|의|가|는|은|와|과|까지|씩|였다|이다|였고)[\s.,])")
+
+
+def tidy_spacing(text: str) -> str:
+    return PCT_PARTICLE.sub("%", NUM_UNIT_GAP.sub(r"\1", text))
 
 
 # 문장 끝: 인용 번호(와 마침표) 뒤의 공백, 또는 줄바꿈
