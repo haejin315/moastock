@@ -7,6 +7,8 @@
   moastock_tool_failures_total{tool}      도구 실패 (시세·지표·검색 등)
   moastock_answer_numbers_total / _supported_total   답변 숫자 중 근거와 맞는 것 (비율 = 숫자 근거율)
   moastock_attribution_fixed_total        인용 번호와 다른 언론사 이름을 바로잡은 횟수
+  moastock_replan_total{result}           근거가 모자라 다시 계획해 찾은 횟수 (added | nothing)
+  moastock_sentence_repair_total{result}  근거에 없는 숫자가 든 문장 처리 (dropped | kept)
   moastock_docs_24h{source}               최근 24시간에 들어온 문서 수 (news | dart) - 수집이 멈추면 0
   moastock_doc_latest_age_seconds{source} 가장 최근 문서가 얼마나 오래됐는지
 
@@ -31,6 +33,8 @@ TOOL_FAIL = Counter("moastock_tool_failures_total", "도구 실패", ["tool"])
 NUMBERS = Counter("moastock_answer_numbers_total", "답변에서 검사한 숫자")
 NUMBERS_OK = Counter("moastock_answer_numbers_supported_total", "근거와 맞는 숫자")
 ATTR_FIXED = Counter("moastock_attribution_fixed_total", "바로잡은 언론사 이름")
+REPLAN = Counter("moastock_replan_total", "근거가 모자라 다시 찾은 횟수", ["result"])          # added | nothing
+REPAIR = Counter("moastock_sentence_repair_total", "근거에 없는 숫자 문장 처리", ["result"])   # dropped | kept
 
 
 class DocsCollector:

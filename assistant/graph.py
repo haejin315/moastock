@@ -1,11 +1,15 @@
 """AI 비서 흐름 (LangGraph). 흐름은 코드가 쥐고, 모델은 '질문 해석·도구 고르기'와 '근거로 문장 쓰기'를 한다.
 
-  understand ─▶ route ─┬─▶ gather ─▶ answer ─▶ verify ─▶ END
-   (도구 계획)          ├─▶ refuse  (매수·매도 권유 요청)        ─▶ END
+  understand ─▶ route ─┬─▶ gather ─┬──────────────▶ answer ─▶ verify ─▶ END
+   (도구 계획)          │           └─▶ replan ─────▶ (근거가 모자랄 때 1회)
+                       ├─▶ refuse  (매수·매도 권유 요청)        ─▶ END
                        └─▶ scope   (주식·경제와 무관한 질문)    ─▶ END
 
 gather: 계획한 도구들을 함께 실행한다 - docs(뉴스·공시 검색), quote(시세), fundamentals(투자 지표),
-price_history(기간 주가), screen(조건 검색), relations(회사 관계 그래프). 결과는 모두 [번호] 근거가 된다.
+price_history(기간 주가), screen(조건 검색), relations(회사 관계 그래프), market(등락 요인 비교).
+결과는 모두 [번호] 근거가 된다.
+replan: 문서가 2건 미만이거나 데이터 도구가 비면, 모델이 새 검색어·추가 도구를 정해 한 번 더 찾는다.
+answer: 문장 단위로 내보내기 전에 숫자를 근거와 대조해, 근거에 없는 금액이 든 문장은 뺀다 (답변당 3문장까지).
 
 스트리밍: 각 노드는 get_stream_writer()로 진행 상황·답변 토큰·출처를 흘려보낸다
 (graph.stream(..., stream_mode="custom")).
@@ -48,6 +52,10 @@ class State(TypedDict, total=False):
     notes: list[str]
     answer: str
     attribution_fixed: int           # 인용 번호와 맞지 않아 바로잡은 언론사 이름 수
+    docs_found: int | None           # docs 도구가 찾은 질문 종목 문서 수 (연결 회사 문서 제외)
+    empty_tools: list[str]           # 결과가 비었거나 실패한 데이터 도구
+    replanned: dict                  # 다시 계획해 더 찾았으면 그 내용
+    repairs: dict                    # 근거에 없는 숫자가 든 문장을 뺀(dropped)·둔(kept) 수
     checks: dict
 
 
@@ -307,6 +315,13 @@ def gather(state: State) -> State:
                 metrics.TOOL_FAIL.labels(name).inc()
                 results[name] = ([], [f"{name} 자료를 가져오지 못해 그 자료 없이 답했습니다"])
     ev = []
+    empty = [s["tool"] for s in plan if s["tool"] != "docs" and not results[s["tool"]][0]]
+    # 문서가 모자란지: 종목 질문은 리랭커 점수가 기준 이상인 문서 수, 종목 없는 질문(시장 전체 등)은 문서 수로 본다
+    # (종목 없는 질문은 맞는 문서도 점수가 낮게 나온다 - 2026-11-24 평가 '이번 달 코스피 시황'이 0건으로 잡혔다)
+    docs_found = None
+    if "docs" in results:
+        own = [e for e in results["docs"][0] if not e.via]
+        docs_found = sum(1 for e in own if e.score >= RELEVANT_SCORE) if state.get("stocks") else len(own)
     for step in plan:                                    # 데이터 도구 → 문서 순으로 번호를 매긴다
         if step["tool"] != "docs":
             ev += results[step["tool"]][0]
@@ -321,7 +336,95 @@ def gather(state: State) -> State:
     for i, e in enumerate(ev, 1):
         e.n = i
     w({"type": "evidence", "items": [e.citation() for e in ev]})
-    return {"evidence": ev, "notes": notes}
+    return {"evidence": ev, "notes": notes, "docs_found": docs_found, "empty_tools": empty}
+
+
+# ---- 3-2. 근거가 모자라면 다시 계획해 한 번 더 찾는다 (최대 1회) ------------------------------
+# 모자람은 코드가 판단한다 (작은 모델에게 '충분한가'를 묻는 것보다 안정적). 어떻게 더 찾을지는 모델이 정한다.
+
+# 리랭커 점수(0~1) 실측 2026-11-24: 질문에 맞는 문서 0.8~1.0, 주제가 다른 문서 0.05~0.7
+RELEVANT_SCORE = 0.7                  # 이 점수 이상인 질문 종목 문서가 2건 미만이면 '모자람'
+ADD_SCORE = 0.5                       # 다시 찾은 문서는 이 점수 이상만 붙인다 (엉뚱한 문서로 근거를 채우지 않게)
+TOOL_LABEL = {"quote": "현재 시세", "fundamentals": "투자 지표", "price_history": "주가 흐름", "screen": "조건 검색",
+              "relations": "회사 관계", "market": "등락 요인 비교"}
+REPLAN_TOOLS = {"quote", "fundamentals", "price_history", "relations"}
+REPLAN_SYS = """너는 주식 정보 서비스의 자료 조사 계획자다. 질문에 답하려고 자료를 찾았지만 모자라다.
+[부족한 점]과 [이미 쓴 검색어]·[이미 쓴 도구]·[찾은 자료]를 보고 한 번 더 찾을 방법을 JSON 하나로만 출력한다.
+필드:
+- query: 문서 검색에 쓸 새 한국어 검색 문장. 이미 쓴 검색어와 다르게 바꾼다 (더 일반적인 말, 다른 표현, 회사명+핵심 주제, 20자 안팎)
+- source: "news" | "dart" | "any" (뉴스·공시 중 어디서 찾을지, 모르면 "any")
+- tools: 더 쓸 도구 목록. 이미 쓴 도구는 넣지 않는다. 필요 없으면 []
+  "quote" 지금 주가 / "fundamentals" PER·PBR·시가총액 등 지표 / "price_history" 최근 주가 흐름 / "relations" 최대주주·계열사
+JSON 외의 말은 쓰지 않는다."""
+
+
+def gaps(state: State) -> list[str]:
+    out = []
+    used = [p["tool"] for p in state.get("plan") or []]
+    found = state.get("docs_found")
+    # 종목 찾기(screen)는 문서가 필요 없고, 등락 원인(market)은 시장·업종 뉴스를 따로 가져온다 - 다시 찾으면 오히려
+    # 근거가 흐트러졌다 (2026-11-24 평가에서 등락 원인 점수 1.0→0.8)
+    if "docs" in used and not {"screen", "market"} & set(used) and found is not None and found < 2:
+        out.append(f"질문 주제와 맞는 뉴스·공시를 {found}건밖에 찾지 못했다")
+    for t in state.get("empty_tools") or []:
+        if t in TOOL_LABEL:
+            out.append(f"{TOOL_LABEL[t]} 자료를 가져오지 못했다")
+    return out
+
+
+def needs_more(state: State) -> str:
+    return "replan" if gaps(state) else "answer"
+
+
+@obs.observe(name="node.replan", capture_input=False, capture_output=False)
+def replan(state: State) -> State:
+    w = get_stream_writer()
+    w({"type": "status", "text": "자료가 부족해 다른 방법으로 더 찾는 중"})
+    ev, notes = list(state.get("evidence") or []), list(state.get("notes") or [])
+    stocks = state.get("stocks") or []
+    used = {p["tool"] for p in state.get("plan") or []}
+    gap = gaps(state)
+    titles = "\n".join(f"- {e.title}" for e in ev[:8]) or "(없음)"
+    j = llm.complete_json([{"role": "system", "content": REPLAN_SYS}, {"role": "user", "content": (
+        f"[질문]\n{state['question']}\n\n[부족한 점]\n" + "\n".join(f"- {g}" for g in gap) +
+        f"\n\n[이미 쓴 검색어]\n{state.get('query')}\n\n[이미 쓴 도구]\n{', '.join(sorted(used))}\n\n[찾은 자료]\n{titles}")}],
+        max_tokens=200)
+    query = str(j.get("query") or "").strip()[:80]
+    if not query or query == state.get("query"):
+        query = state["question"][:80]                   # 모델이 새 검색어를 못 내면 질문 원문으로
+    source = j.get("source") if j.get("source") in ("news", "dart", "any") else "any"
+    # 추가 도구는 처음 도구가 비었을 때만 (문서가 모자란데 지표·주가를 덧붙이면 질문과 상관없는 근거만 는다 - 실측)
+    extra = [t for t in (j.get("tools") or []) if t in REPLAN_TOOLS and t not in used and stocks
+             and state.get("empty_tools")][:2]
+    docs_gap = any("뉴스·공시" in g for g in gap)
+    steps = ([{"tool": "docs", "args": {}}] if docs_gap else []) + [{"tool": t, "args": {}} for t in extra]
+    retry = {**state, "query": query, "source": source}
+    have = {e.chunk_id for e in ev if e.chunk_id} | {e.doc_id for e in ev if e.kind == "data"}
+    added = []
+    for step in steps:
+        try:
+            got, _ = run_tool(step, retry)
+        except Exception as e:                           # 다시 찾기가 실패해도 처음 자료로 답한다
+            print(f"[replan] {step['tool']} 실패: {e!r}", flush=True)
+            metrics.TOOL_FAIL.labels(step["tool"]).inc()
+            continue
+        for e in got:
+            key = e.chunk_id or e.doc_id
+            if step["tool"] == "docs" and (e.via or e.score < ADD_SCORE):
+                continue
+            if key not in have:
+                have.add(key); added.append(e)
+    added = added[:max(2, EVIDENCE_TOTAL + 2 - len(ev))]
+    for i, e in enumerate(added, len(ev) + 1):           # 처음 근거의 번호는 그대로 두고 뒤에 붙인다
+        e.n = i
+    ev += added
+    if added:
+        notes.append(f"처음 찾은 자료가 부족해 '{query}'(으)로 한 번 더 찾았습니다")
+        w({"type": "evidence", "items": [e.citation() for e in ev]})
+    metrics.REPLAN.labels("added" if added else "nothing").inc()
+    obs.span(output={"gaps": gap, "query": query, "source": source, "tools": extra, "added": len(added)})
+    return {"evidence": ev, "notes": notes, "replanned": {"gaps": gap, "query": query, "tools": extra,
+                                                          "added": len(added)}}
 
 
 # ---- 4. 답변 ------------------------------------------------------------------------
@@ -330,7 +433,7 @@ ANSWER_SYS = """너는 모아스톡의 AI 비서다. 아래 [근거]만 사용�
 규칙:
 1. 근거에 없는 사실·숫자는 절대 쓰지 않는다. 근거가 부족하면 "확인된 자료에서는 찾지 못했습니다"라고 말한다.
 2. 문장마다 끝에 근거 번호를 [1], [2]처럼 붙인다.
-   숫자(금액·비율·날짜)는 근거에 적힌 표기 그대로 옮긴다. "16,419,204,526원"을 "164억…원"처럼 단위로 바꿔 쓰지 않는다.
+   숫자(금액·비율·날짜)는 근거에 적힌 표기 그대로 옮긴다. "○○,○○○,○○○원"을 "○○억 원"처럼 단위로 바꿔 쓰지 않는다 (예시의 숫자를 답에 쓰지 않는다).
 3. 날짜가 중요하면 시점과 자료 종류를 밝힌다. 공시면 "N월 N일 공시에 따르면", 뉴스면 "N월 N일 ○○(언론사) 보도에 따르면".
    뉴스를 공시라고 부르지 않는다. 언론사 이름은 그 문장에 붙이는 번호의 근거 머리에 적힌 언론사를 쓴다.
 4. 매수·매도 추천이나 주가 예측은 하지 않는다.
@@ -421,8 +524,9 @@ def answer(state: State) -> State:
             {"role": "user", "content": f"[근거]\n{evidence_block(ev)}\n\n[질문]\n{state['question']}" + (
                 f"\n\n[이미 쓴 첫 문장]\n{lead}\n그 다음 문장부터 이어 쓴다. 질문이 말한 방향의 원인을 지어내지 말고, "
                 "실제 움직임과 그 요인을 설명한다." if lead else "")}]
-    # 문장이 끝날 때마다(인용 번호 뒤) 출처 이름을 바로잡아 내보낸다 - 사용자는 고친 문장만 본다
+    # 문장이 끝날 때마다(인용 번호 뒤) 출처 이름·숫자를 바로잡아 내보낸다 - 사용자는 고친 문장만 본다
     parts, buf, fixed = [], "", 0
+    guard = NumberGuard(ev, evidence_block(ev))
     if lead:
         parts.append(lead + " ")
         w({"type": "token", "text": lead + " "})
@@ -434,6 +538,7 @@ def answer(state: State) -> State:
                 out = out.replace(sent, "", 1) if sent.strip() else out
             out = out.lstrip()
         buf, fixed = buf[upto:], fixed + n
+        out = guard(out)
         if out:
             parts.append(out)
             w({"type": "token", "text": out})
@@ -443,7 +548,57 @@ def answer(state: State) -> State:
         if ends:
             flush(ends[-1])
     flush(len(buf))
-    return {"answer": "".join(parts).strip(), "attribution_fixed": fixed}
+    if not "".join(parts).strip():                 # 문장을 모두 뺐으면 (근거에 없는 숫자뿐) 그렇다고 알린다
+        text = "확인된 자료에서는 질문하신 내용의 정확한 수치를 찾지 못했습니다. 아래 출처를 직접 확인해 주세요."
+        parts.append(text)
+        w({"type": "token", "text": text})
+    return {"answer": "".join(parts).strip(), "attribution_fixed": fixed, "repairs": guard.counts}
+
+
+MAX_DROPS = 3                         # 답변 하나에서 뺄 수 있는 문장 수 (그 이상이면 답이 비어 원래대로 둔다)
+
+
+class NumberGuard:
+    """내보내기 직전의 문장마다 숫자를 근거와 대조한다.
+    - 근거에 없는 금액(100만 이상)이 든 문장은 뺀다 (dropped) - 작은 모델이 지어내거나 자릿수를 틀린 값
+    - 작은 숫자는 그대로 둔다 (kept) - 날짜·계산값을 검사기가 잘못 잡았을 수도 있어서
+    - 없는 근거 번호([9]인데 근거가 8개)는 지운다
+    모델에게 다시 쓰게 하는 방식은 2026-11-24 평가에서 뺐다: 근거에 있는 '다른' 숫자로 바꿔 검사만 통과했다
+    (잔금 828억 → 총액 9200억, 합계 38.2억 → 시설자금 근처 202.0억). 틀린 수치보다 빠진 문장이 낫다."""
+
+    def __init__(self, ev: list[Evidence], block: str):
+        self.by_n = {e.n: e for e in ev}
+        self.src = number_values(block)               # 모델이 실제로 본 근거 글 (날짜·환산값 포함)
+        self.counts = {"dropped": 0, "kept": 0, "bad_citations": 0}
+
+    def bad(self, sent: str) -> list[tuple[str, tuple[float, ...]]]:
+        return [(r, v) for r, v in checked_numbers(sent) if closeness(v, self.src) > 1e-2]
+
+    def __call__(self, text: str) -> str:
+        pieces = re.split(r"((?<=[.!?])\s+|\n)", text)
+        for i in range(0, len(pieces), 2):
+            pieces[i] = self.sentence(pieces[i])
+        out = "".join(pieces)
+        return re.sub(r"(?<=\S) {2,}", " ", out) if out.strip() else ""
+
+    def sentence(self, s: str) -> str:
+        def drop_invalid(m):
+            if int(m.group(1)) in self.by_n:
+                return m.group(0)
+            self.counts["bad_citations"] += 1
+            return ""
+        s = re.sub(r"\[(\d+)\]", drop_invalid, s)
+        bad = self.bad(s)
+        if not bad:
+            return s
+        if any(max(v) >= 1e6 for _, v in bad) and self.counts["dropped"] < MAX_DROPS:
+            kind, out = "dropped", ""
+        else:
+            kind, out = "kept", s
+        self.counts[kind] += 1
+        metrics.REPAIR.labels(kind).inc()
+        print(f"[guard] {kind}: {s.strip()[:100]} (근거에 없음: {[r for r, _ in bad]})", flush=True)
+        return out
 
 
 PREMISE = re.compile(r"질문은 (상승|하락) 이유를 묻지만 실제로는 5거래일 ([+-][\d.]+%), 20거래일 ([+-][\d.]+%)")
@@ -463,7 +618,7 @@ def premise_correction(ev: list[Evidence]) -> str:
 # 작은 모델은 숫자와 단위를 띄어 쓴다 ('2026 년 11 월', '193,500 원', '-8.51% 를'). 원문 자료는 붙여 쓰므로 붙인다.
 # 단위 뒤가 다른 낱말이 되는 경우(일본·조사·주가·원인 등)는 건드리지 않는다
 NUM_UNIT_GAP = re.compile(r"(\d) (?=(?:년|월|일(?!본)|원(?!인|래|칙)|억|조(?![사정건치])|만(?!약|큼)|천(?!만에)|주(?![가식주요의])"
-                          r"|개|배|명|건|위|차|분기|거래일|시(?![장가총세점작])|분(?![석야할위])|%p|bp)(?![A-Za-z]))")
+                          r"|개|배|명|건|위|차|분기|거래일|백(?![화분신의])|시(?![장가총세점작])|분(?![석야할위])|%p|bp)(?![A-Za-z]))")
 PCT_PARTICLE = re.compile(r"%\s+(?=(?:를|을|로|으로|에|에서|의|가|는|은|와|과|까지|씩|였다|이다|였고)[\s.,])")
 
 
@@ -508,7 +663,7 @@ def fix_attribution(text: str, ev: list[Evidence]) -> tuple[str, int]:
 # ---- 5. 검증 ------------------------------------------------------------------------
 
 # 숫자 표현: "12,400원", "3.5%", "202억 5천만 원", "300만 주"처럼 한글 단위가 섞인 것까지 하나로 잡는다
-NUM_EXPR = re.compile(r"\d[\d,]*(?:\.\d+)?(?:\s*(?:조|억|만|천)(?:\s*\d[\d,]*(?:\.\d+)?)?)*")
+NUM_EXPR = re.compile(r"\d[\d,]*(?:\.\d+)?(?:\s*(?:조(?![기정사건치합항선])|억|만(?![기약큼료])|천|백(?![화분]))(?:\s*\d[\d,]*(?:\.\d+)?)?)*")
 UNIT = {"조": 10**12, "억": 10**8, "만": 10**4, "천": 10**3}
 
 
@@ -523,8 +678,8 @@ def korean_value(expr: str) -> float | None:
         for ch in s:
             if ch.isdigit() or ch == ".":
                 cur += ch
-            elif ch == "천":
-                big += (float(cur) if cur else 1) * 1000; cur = ""
+            elif ch in ("천", "백"):                 # '7천8백만' - 만 아래 자리
+                big += (float(cur) if cur else 1) * (1000 if ch == "천" else 100); cur = ""
             elif ch in ("만", "억", "조"):
                 part = big + (float(cur) if cur else 0)
                 total += (part if part else 1) * UNIT[ch]; big, cur = 0.0, ""
@@ -537,23 +692,39 @@ def number_values(text: str) -> set[float]:
     return {v for m in NUM_EXPR.finditer(text) if (v := korean_value(m.group(0))) is not None}
 
 
+# 공시 표는 '(단위 : 백만원)'처럼 단위를 머리에 두고 숫자만 적는다. 답변의 '101,208백만원'은 근거의 '101,208'과 같다
+TABLE_UNIT = re.compile(r"^([\d,]+(?:\.\d+)?)\s*(?:백만|천)$")
+
+
+def checked_numbers(text: str) -> list[tuple[str, tuple[float, ...]]]:
+    """검사할 숫자 (원문 표기, 맞춰 볼 값들). 인용 번호와 한 자리 정수(1일, 2회 등)는 뺀다.
+    표 단위 표기('6,624백만')는 환산값과 적힌 숫자 둘 다로 맞춰 본다."""
+    nums = []
+    for m in NUM_EXPR.finditer(re.sub(r"\[\d+\]", "", text)):
+        raw = m.group(0).strip()
+        v = korean_value(raw)
+        if v is None or (v < 10 and "." not in raw):
+            continue
+        t = TABLE_UNIT.match(raw)
+        nums.append((raw, (v, float(t.group(1).replace(",", ""))) if t else (v,)))
+    return nums
+
+
+def closeness(vals: tuple[float, ...], src_vals: set[float]) -> float:
+    """근거의 가장 가까운 값과의 상대 오차 (후보 값 중 가장 가까운 것, 근거에 숫자가 없으면 1)"""
+    return min((abs(v - s) / max(abs(s), 1e-9) for v in vals for s in src_vals), default=1.0)
+
+
 def verify_answer(text: str, ev: list[Evidence]) -> dict:
     """인용 번호가 실제 근거를 가리키는지, 답변의 숫자가 근거 원문의 값과 일치하는지 검사.
     '164억 1천9만…'처럼 단위로 바꿔 쓴 숫자도 실제 값으로 계산해 비교하므로, 잘못 옮긴 숫자를 잡아낸다."""
     cited = sorted({int(n) for n in re.findall(r"\[(\d+)\]", text)})
     valid = [n for n in cited if 1 <= n <= len(ev)]
     src_vals = number_values(" ".join(e.text + " " + e.title for e in ev))
-    body = re.sub(r"\[\d+\]", "", text)
-    nums = []
-    for m in NUM_EXPR.finditer(body):
-        raw = m.group(0).strip()
-        v = korean_value(raw)
-        if v is None or (v < 10 and "." not in raw):        # 한 자리 정수(1일, 2회 등)는 검사하지 않는다
-            continue
-        nums.append((raw, v))
+    nums = checked_numbers(text)
     # 일치: 0.1% 이내(반올림된 환산값 '약 164.2억' 포함) / 근사: 1% 이내(202.5억→'202억' 같은 절사) / 그 밖: 불일치
     def closest(v):
-        return min((abs(v - s) / max(abs(s), 1e-9) for s in src_vals), default=1.0)
+        return closeness(v, src_vals)
     exact = [r for r, v in nums if closest(v) <= 1e-3]
     approx = [r for r, v in nums if 1e-3 < closest(v) <= 1e-2]
     bad = [r for r, v in nums if closest(v) > 1e-2]
@@ -578,6 +749,10 @@ def verify(state: State) -> State:
             obs.score("number_support", checks["numbers_supported"] / checks["numbers"])
         obs.score("has_citation", float(checks.get("has_citation", False)))
         obs.score("invalid_citations", float(len(checks.get("invalid_citations") or [])))
+        checks["repairs"] = state.get("repairs") or {}
+        checks["replanned"] = state.get("replanned") or None
+        obs.score("sentences_dropped", float(checks["repairs"].get("dropped", 0)))
+        obs.score("replanned", float(bool(checks["replanned"])))
     obs.trace(output=state.get("answer", ""), metadata={"intent": state.get("intent"), "stocks": state.get("stocks"),
                                                        "evidence": [e.citation() for e in ev]})
     w({"type": "done", "checks": checks, "notes": state.get("notes") or [], "disclaimer": DISCLAIMER,
@@ -592,7 +767,9 @@ def build():
         g.add_node(name, fn)
     g.set_entry_point("understand")
     g.add_conditional_edges("understand", route, {"gather": "gather", "refuse": "refuse", "scope": "scope"})
-    g.add_edge("gather", "answer")
+    g.add_node("replan", replan)
+    g.add_conditional_edges("gather", needs_more, {"replan": "replan", "answer": "answer"})
+    g.add_edge("replan", "answer")
     g.add_edge("answer", "verify")
     g.add_edge("verify", END)
     for n in ("refuse", "scope"):
